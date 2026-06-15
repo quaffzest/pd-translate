@@ -11,6 +11,7 @@ const googleConfig = require('./config/google');
 const driveService = require('./services/driveService');
 
 const PORT = process.env.PORT || 3000;
+console.log('Starting pd-translate, GOOGLE_CLIENT_ID set:', !!process.env.GOOGLE_CLIENT_ID);
 const DATA_DIR = process.env.DATA_DIR || (fs.existsSync('/var/data') ? '/var/data' : path.join(__dirname, 'data'));
 const LEGACY_FILE = path.join(DATA_DIR, '第01话_协作主表.xlsx');
 const WORKBOOK_DIR = path.join(DATA_DIR, 'workbooks');
