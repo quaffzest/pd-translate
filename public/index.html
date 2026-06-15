@@ -256,7 +256,7 @@ var saveLabel=document.getElementById("saveLabel");
 var statsInfo=document.getElementById("statsInfo");
 var rowCount=document.getElementById("rowCount");
 var toast=document.getElementById("toast");
-var clearLocalBtn=document.getElementById("clearLocalBtn");
+
 
 // ── Toast ──
 var toastTimer=null;
@@ -264,11 +264,8 @@ function showToast(msg){toast.textContent=msg;toast.classList.add("show");clearT
 
 // ── Drag & drop xlsx ──
 // ── File input ──
-fileInput.onchange=function(e){if(e.target.files[0])loadXlsx(e.target.files[0])};
 
 // ── Korean import ──
-document.getElementById("importKrBtn").onclick=function(){krFileInput.click()};
-krFileInput.onchange=function(e){if(e.target.files[0])importKorean(e.target.files[0])};
 
 // ── Load xlsx ──
 function initFromServer(state){
@@ -513,108 +510,7 @@ function markClean(){
 }
 
 // ── Auto-save to localStorage ──
-var STORAGE_KEY="translation_workbench_v2";
-function saveToLocal(){
-  if(!Object.keys(allData).length)return;
-  saveIndicator.className="indicator saving";saveLabel.textContent="保存中…";
-  try{
-    var data={fileName:currentFileName,allData:{}};
-    for(var sn in allData){
-      data.allData[sn]={headers:allData[sn].headers,rows:allData[sn].rows.map(function(r){return{seq:r.seq,kr:r.kr,content:r.content.slice(),merge:r.merge}})};
-    }
-    localStorage.setItem(STORAGE_KEY,JSON.stringify(data));
-    markClean();
-  }catch(err){saveLabel.textContent="保存失败"}
-}
 
-function restoreFromLocal(){
-  try{
-    var raw=localStorage.getItem(STORAGE_KEY);
-    if(!raw)return;
-    var data=JSON.parse(raw);
-    if(data.fileName!==currentFileName)return;
-    for(var sn in data.allData){
-      if(allData[sn]){
-        var stored=data.allData[sn];
-        for(var i=0;i<stored.rows.length&&i<allData[sn].rows.length;i++){
-          allData[sn].rows[i].content=stored.rows[i].content;
-          allData[sn].rows[i].merge=stored.rows[i].merge;
-        }
-      }
-    }
-    renderTable();updatePreview();
-    showToast("已恢复上次编辑进度");
-  }catch(err){}
-}
-
-// Auto-save every 30s
-
-
-// Save on page unload
-
-
-// ── Save xlsx ──
-document.getElementById("saveBtn").onclick=function(){
-  if(!currentData.length){showToast("没有数据");return}
-  var hdr=["序","韩文原文"];
-  for(var ci=0;ci<contentHeaders.length;ci++)hdr.push(contentHeaders[ci].name);
-  hdr.push("终稿","合并");
-  var a=[hdr];
-  for(var i=0;i<currentData.length;i++){
-    var r=currentData[i];
-    var row=[r.seq,r.kr];
-    for(var ci=0;ci<r.content.length;ci++)row.push(r.content[ci]);
-    row.push(getFinal(r),r.merge?"Y":"");
-    a.push(row);
-  }
-  var ws=XLSX.utils.aoa_to_sheet(a);
-  var wb=XLSX.utils.book_new();
-  XLSX.utils.book_append_sheet(wb,ws,currentSheet);
-  var blob=new Blob([XLSX.write(wb,{bookType:"xlsx",type:"array",bookSST:false})],{type:"application/octet-stream"});
-  var aEl=document.createElement("a");
-  aEl.href=URL.createObjectURL(blob);
-  aEl.download=currentFileName.replace(".xlsx","")+"_已编辑.xlsx";
-  aEl.click();
-  showToast("已保存 xlsx");
-  saveToLocal();
-};
-
-// ── Export txt ──
-document.getElementById("exportTxtBtn").onclick=function(){
-  if(!currentData.length){showToast("没有数据");return}
-  var paras=getMergedPreview(currentData);
-  // UTF-8 BOM for Windows Notepad compatibility
-  var bom=new Uint8Array([0xEF,0xBB,0xBF]);
-  var enc=new TextEncoder();
-  var content=paras.join("\n\n");
-  var combined=new Uint8Array(bom.length+enc.encode(content).length);
-  combined.set(bom);combined.set(enc.encode(content),bom.length);
-  var blob=new Blob([combined],{type:"text/plain;charset=utf-8"});
-  var aEl=document.createElement("a");
-  aEl.href=URL.createObjectURL(blob);
-  aEl.download=currentFileName.replace(".xlsx","")+"_终稿.txt";
-  aEl.click();
-  showToast("终稿已导出（"+paras.length+" 段）");
-};
-
-// ── Copy to clipboard ──
-document.getElementById("copyBtn").onclick=function(){
-  var paras=getMergedPreview(currentData);
-  navigator.clipboard.writeText(paras.join("\n\n")).then(function(){showToast("已复制到剪贴板")}).catch(function(){showToast("复制失败")});
-};
-
-// ── Refresh preview ──
-document.getElementById("refreshPreviewBtn").onclick=function(){updatePreview();showToast("已刷新")};
-
-// ── Clear localStorage ──
-clearLocalBtn.onclick=function(){
-  if(confirm("确定清空本地缓存？这将清除此文件的所有编辑记录。")){
-    localStorage.removeItem(STORAGE_KEY);
-    showToast("本地缓存已清空");
-  }
-};
-
-// ── Stats ──
 function updateStats(){
   if(!currentData.length){statsInfo.textContent="";return}
   var krEmpty=0,translated=0,merged=0;
