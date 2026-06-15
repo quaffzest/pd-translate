@@ -3,6 +3,7 @@ const http = require('http');
 const { WebSocketServer } = require('ws');
 const XLSX = require('xlsx');
 const path = require('path');
+const fs = require('fs');
 
 const DATA_FILE = path.join(__dirname, 'data', '第01话_协作主表.xlsx');
 const PORT = process.env.PORT || 3000;
@@ -10,9 +11,9 @@ const PORT = process.env.PORT || 3000;
 let sheetsData = {};
 let sheetNames = [];
 let currentSheet = '';
+let saveTimer = null;
 
-function loadXlsx() {
-  const wb = XLSX.readFile(DATA_FILE);
+function parseWorkbook(wb) {
   sheetsData = {};
   sheetNames = [];
   for (let i = 0; i < wb.SheetNames.length; i++) {
@@ -45,6 +46,10 @@ function loadXlsx() {
   console.log('Loaded: ' + sheetNames.length + ' sheets, ' + Object.values(sheetsData).reduce((a, s) => a + s.rows.length, 0) + ' rows');
 }
 
+function loadXlsx() {
+  parseWorkbook(XLSX.readFile(DATA_FILE));
+}
+
 function saveXlsx() {
   const wb = XLSX.utils.book_new();
   for (const sn of sheetNames) {
@@ -65,6 +70,11 @@ function saveXlsx() {
   }
   XLSX.writeFile(wb, DATA_FILE);
   console.log('Saved xlsx at ' + new Date().toLocaleTimeString());
+}
+
+function scheduleSave() {
+  clearTimeout(saveTimer);
+  saveTimer = setTimeout(saveXlsx, 5000);
 }
 
 const app = express();
@@ -96,10 +106,12 @@ wss.on('connection', (ws) => {
       if (msg.type === 'edit') {
         const info = sheetsData[msg.sheet];
         if (info && info.rows[msg.row]) { info.rows[msg.row].content[msg.col] = msg.value; }
+        scheduleSave();
         broadcast(msg, ws);
       } else if (msg.type === 'merge') {
         const info = sheetsData[msg.sheet];
         if (info && info.rows[msg.row]) { info.rows[msg.row].merge = msg.value; }
+        scheduleSave();
         broadcast(msg, ws);
       } else if (msg.type === 'switchSheet') {
         currentSheet = msg.sheet;
@@ -124,14 +136,38 @@ wss.on('connection', (ws) => {
 
 app.use(express.static(path.join(__dirname, 'public')));
 app.get('/api/status', (req, res) => { res.json({ clients: clients.size, wsPath: '/ws' }); });
+app.get('/api/download', (req, res) => {
+  res.download(DATA_FILE, '协作主表.xlsx');
+});
 app.post('/api/data', express.json(), (req, res) => {
   res.json({ state: { sheets: sheetsData, sheetNames: sheetNames, currentSheet: currentSheet } });
+});
+app.post('/api/upload', express.raw({ type: '*/*', limit: '50mb' }), (req, res) => {
+  if (!req.body || !req.body.length) return res.status(400).json({ ok: false, error: 'empty_file' });
+  const oldState = { sheets: sheetsData, sheetNames: sheetNames, currentSheet: currentSheet };
+  try {
+    const wb = XLSX.read(req.body, { type: 'buffer' });
+    parseWorkbook(wb);
+    if (!sheetNames.length) throw new Error('no usable sheets');
+    const backup = DATA_FILE + '.bak';
+    if (fs.existsSync(DATA_FILE)) fs.copyFileSync(DATA_FILE, backup);
+    fs.writeFileSync(DATA_FILE, req.body);
+    const state = { sheets: sheetsData, sheetNames: sheetNames, currentSheet: currentSheet };
+    broadcast({ type: 'init', state });
+    res.json({ ok: true, state });
+  } catch (e) {
+    sheetsData = oldState.sheets;
+    sheetNames = oldState.sheetNames;
+    currentSheet = oldState.currentSheet;
+    res.status(400).json({ ok: false, error: e.message });
+  }
 });
 app.post('/api/edit', express.json(), (req, res) => {
   const msg = req.body || {};
   const info = sheetsData[msg.sheet];
   if (!info || !info.rows[msg.row]) return res.status(404).json({ ok: false, error: 'row_not_found' });
   info.rows[msg.row].content[msg.col] = String(msg.value || '');
+  scheduleSave();
   broadcast({ type: 'edit', sheet: msg.sheet, row: msg.row, col: msg.col, value: String(msg.value || '') });
   res.json({ ok: true });
 });
@@ -140,6 +176,7 @@ app.post('/api/merge', express.json(), (req, res) => {
   const info = sheetsData[msg.sheet];
   if (!info || !info.rows[msg.row]) return res.status(404).json({ ok: false, error: 'row_not_found' });
   info.rows[msg.row].merge = !!msg.value;
+  scheduleSave();
   broadcast({ type: 'merge', sheet: msg.sheet, row: msg.row, value: !!msg.value });
   res.json({ ok: true });
 });

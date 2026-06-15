@@ -11,7 +11,7 @@ button,input{font:inherit}.topbar{display:flex;gap:10px;align-items:center;paddi
 .conn{margin-left:auto;display:flex;align-items:center;gap:10px;padding:7px 10px;border:1px solid var(--line);border-radius:8px;background:#fafbfc;font-size:13px}.dot{width:9px;height:9px;border-radius:50%;background:#98a2b3}.dot.ok{background:var(--ok)}.dot.warn{background:var(--warn)}.dot.bad{background:var(--bad)}.mode{font-weight:700}.small{font-size:12px;color:var(--muted)}
 .chapters{display:flex;gap:4px;align-items:center;min-height:38px;padding:0 14px;background:var(--surface);border-bottom:1px solid var(--line);overflow-x:auto}.tab{border:0;background:transparent;border-bottom:2px solid transparent;padding:9px 14px;color:var(--muted);cursor:pointer;white-space:nowrap}.tab:hover{background:#f1f3f7;color:var(--text)}.tab.active{color:var(--brand);border-bottom-color:var(--brand);font-weight:700}.chapter-info{margin-left:auto;white-space:nowrap}
 .main{flex:1;display:flex;min-height:0}.left{flex:1.55;min-width:0;background:var(--surface);display:flex;flex-direction:column;border-right:1px solid var(--line)}.right{flex:1;min-width:320px;background:#fffdfa;display:flex;flex-direction:column}.tools{display:flex;gap:8px;align-items:center;padding:7px 10px;border-bottom:1px solid var(--line)}.tools input{flex:1;border:1px solid var(--line);border-radius:6px;padding:7px 9px}
-.table-wrap{flex:1;overflow:auto}table{width:100%;border-collapse:collapse;table-layout:fixed;font-size:13px}th{position:sticky;top:0;z-index:2;background:#f8fafc;color:var(--muted);border-bottom:2px solid var(--line);padding:7px 5px;text-align:left;font-size:12px}td{border:1px solid #e7eaf0;padding:5px;vertical-align:top;line-height:1.55;white-space:pre-wrap;word-break:break-word}.w-merge{width:38px;text-align:center}.w-seq{width:54px;text-align:center}.kr{background:var(--kr);color:#555;font-family:"Malgun Gothic","Apple SD Gothic Neo","Noto Sans KR",sans-serif}.editable{background:var(--edit);outline:none;cursor:text}.editable.review{background:var(--review)}.editable:focus{box-shadow:inset 0 0 0 2px var(--brand);background:#fffde7}.final{background:var(--final);color:#3f2da8;font-weight:600}.row-active td{background:var(--active)!important}.row-hidden{opacity:.52}
+.table-wrap{flex:1;overflow:auto}table{width:100%;border-collapse:collapse;table-layout:fixed;font-size:13px}th{position:sticky;top:0;z-index:2;background:#f8fafc;color:var(--muted);border-bottom:2px solid var(--line);padding:7px 5px;text-align:left;font-size:12px}td{border:1px solid #e7eaf0;padding:5px;vertical-align:top;line-height:1.55;white-space:pre-wrap;word-break:break-word}.w-merge{width:38px;text-align:center}.w-seq{width:54px;text-align:center}.kr{background:var(--kr);color:#555;font-family:"Malgun Gothic","Apple SD Gothic Neo","Noto Sans KR",sans-serif}.editable{background:var(--edit);outline:none;cursor:text}.editable.review{background:var(--review)}.editable:focus{box-shadow:inset 0 0 0 2px var(--brand);background:#fffde7}.merged-cell{background:#f6f8fb;color:#475467}.merged-note{display:inline-block;margin-top:5px;padding:2px 6px;border-radius:999px;background:#eef0f4;color:#667085;font-size:11px}.final{background:var(--final);color:#3f2da8;font-weight:600}.row-active td{background:var(--active)!important}
 .preview-head{display:flex;justify-content:space-between;gap:10px;align-items:center;padding:10px 14px;border-bottom:1px solid var(--line);font-size:13px;color:var(--muted)}.preview-actions{display:flex;gap:6px}.mini{border:1px solid var(--line);border-radius:5px;background:#fff;color:var(--muted);padding:4px 8px;cursor:pointer}.mini:hover{background:#f1f3f7}.preview{flex:1;overflow:auto;padding:14px 18px}.para{display:flex;gap:7px;margin:0 0 8px;padding:6px 8px;border-radius:6px;line-height:1.85;cursor:pointer;font-family:"Noto Serif SC","Source Han Serif SC",SimSun,serif}.para:hover,.para.active{background:#eaf0ff}.para.active{box-shadow:-3px 0 0 #f0c040}.pnum{width:38px;flex:none;color:#98a2b3;font:12px system-ui}.ptext{flex:1;white-space:pre-wrap}.pa{display:flex;flex-direction:column;gap:3px;opacity:0}.para:hover .pa{opacity:1}.pa button{width:28px;height:26px;border:1px solid var(--line);border-radius:5px;background:#fff;cursor:pointer}.empty{height:100%;display:flex;align-items:center;justify-content:center;text-align:center;color:#98a2b3;line-height:1.8;padding:30px}
 .statusbar{display:flex;gap:18px;align-items:center;padding:6px 14px;border-top:1px solid var(--line);background:var(--surface);font-size:12px;color:var(--muted)}.save-dot{width:8px;height:8px;border-radius:50%;display:inline-block;background:var(--ok)}.save-dot.dirty{background:var(--bad)}.save-dot.saving{background:var(--warn)}.toast{position:fixed;left:50%;bottom:42px;transform:translateX(-50%);background:#202633;color:#fff;border-radius:8px;padding:9px 18px;font-size:13px;opacity:0;pointer-events:none;transition:opacity .18s}.toast.show{opacity:1}
 @media(max-width:900px){.main{flex-direction:column}.left,.right{flex:1;min-width:0}.right{border-top:1px solid var(--line)}.conn{margin-left:0;width:100%;justify-content:space-between}}
@@ -22,8 +22,11 @@ button,input{font:inherit}.topbar{display:flex;gap:10px;align-items:center;paddi
   <div class="logo">翻译协作工作台</div>
   <input id="userName" class="name" placeholder="你的名字" autocomplete="off">
   <button id="saveBtn" class="btn">保存到服务器</button>
+  <button id="downloadBtn" class="btn sec">查看/下载表格</button>
+  <button id="uploadBtn" class="btn sec">上传表格</button>
   <button id="exportBtn" class="btn sec">导出终稿 txt</button>
   <button id="reconnectBtn" class="btn sec">重新连接</button>
+  <input id="uploadInput" type="file" accept=".xlsx,.xls" hidden>
   <div class="conn">
     <span id="connDot" class="dot"></span>
     <span id="connText" class="mode">未连接</span>
@@ -51,10 +54,10 @@ button,input{font:inherit}.topbar{display:flex;gap:10px;align-items:center;paddi
 (function(){
   "use strict";
   var state={sheets:{},sheetNames:[],currentSheet:""};
-  var ws=null,wsTimer=null,pollTimer=null,reconnectTimer=null,mode="offline";
+  var ws=null,wsTimer=null,pollTimer=null,reconnectTimer=null,autoSaveTimer=null,mode="offline";
   var dirty=false,search="",previewMap=[],suppressRemote=false;
   var els={
-    userName:document.getElementById("userName"),saveBtn:document.getElementById("saveBtn"),exportBtn:document.getElementById("exportBtn"),reconnectBtn:document.getElementById("reconnectBtn"),
+    userName:document.getElementById("userName"),saveBtn:document.getElementById("saveBtn"),downloadBtn:document.getElementById("downloadBtn"),uploadBtn:document.getElementById("uploadBtn"),uploadInput:document.getElementById("uploadInput"),exportBtn:document.getElementById("exportBtn"),reconnectBtn:document.getElementById("reconnectBtn"),
     connDot:document.getElementById("connDot"),connText:document.getElementById("connText"),onlineText:document.getElementById("onlineText"),chapters:document.getElementById("chapters"),
     searchInput:document.getElementById("searchInput"),searchCount:document.getElementById("searchCount"),dataTable:document.getElementById("dataTable"),tableEmpty:document.getElementById("tableEmpty"),
     thead:document.getElementById("thead"),tbody:document.getElementById("tbody"),preview:document.getElementById("preview"),previewCount:document.getElementById("previewCount"),
@@ -113,8 +116,9 @@ button,input{font:inherit}.topbar{display:flex;gap:10px;align-items:center;paddi
   }
   function loadStatus(){fetch("/api/status").then(function(r){return r.json()}).then(function(s){els.onlineText.textContent=(s.clients||0)+" 人在线"}).catch(function(){})}
   function postJson(url,payload){return fetch(url,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload||{})}).then(function(r){if(!r.ok)throw new Error(r.status);return r.json()})}
-  function sendEdit(row,col,value){setDirty(true);if(sendWS({type:"edit",sheet:state.currentSheet,row:row,col:col,value:value}))return;if(mode==="poll")postJson("/api/edit",{sheet:state.currentSheet,row:row,col:col,value:value}).catch(function(){toast("轮询模式下提交编辑失败")})}
-  function sendMerge(row,value){setDirty(true);if(sendWS({type:"merge",sheet:state.currentSheet,row:row,value:value}))return;if(mode==="poll")postJson("/api/merge",{sheet:state.currentSheet,row:row,value:value}).catch(function(){toast("轮询模式下提交合段失败")})}
+  function scheduleAutoSave(){clearTimeout(autoSaveTimer);autoSaveTimer=setTimeout(saveServer,3000)}
+  function sendEdit(row,col,value){setDirty(true);scheduleAutoSave();if(sendWS({type:"edit",sheet:state.currentSheet,row:row,col:col,value:value}))return;if(mode==="poll")postJson("/api/edit",{sheet:state.currentSheet,row:row,col:col,value:value}).catch(function(){toast("轮询模式下提交编辑失败")})}
+  function sendMerge(row,value){setDirty(true);scheduleAutoSave();if(sendWS({type:"merge",sheet:state.currentSheet,row:row,value:value}))return;if(mode==="poll")postJson("/api/merge",{sheet:state.currentSheet,row:row,value:value}).catch(function(){toast("轮询模式下提交合段失败")})}
 
   function visibleRows(){var rows=current().rows;if(!search)return rows.map(function(_,i){return i});var q=search.toLowerCase(),out=[];rows.forEach(function(r,i){var hay=[r.seq,r.kr,finalText(r)].concat(r.content||[]).join("\n").toLowerCase();if(hay.indexOf(q)>=0)out.push(i)});return out}
   function renderAll(keepClean){renderChapters();renderTable();renderPreview();renderStats();if(!keepClean&&dirty===false)setDirty(false)}
@@ -127,13 +131,22 @@ button,input{font:inherit}.topbar{display:flex;gap:10px;align-items:center;paddi
     var info=current(),rows=info.rows,headers=info.headers;if(!rows.length){els.dataTable.hidden=true;els.tableEmpty.style.display="flex";return}
     els.dataTable.hidden=false;els.tableEmpty.style.display="none";
     els.thead.innerHTML="<tr><th class='w-merge'>合</th><th class='w-seq'>序</th><th>韩文原文</th>"+headers.map(function(h){return "<th>"+esc(h.name)+"</th>"}).join("")+"<th>终稿</th></tr>";
-    els.tbody.innerHTML="";visibleRows().forEach(function(i){
-      var r=rows[i],tr=document.createElement("tr");tr.dataset.row=i;if(r.merge)tr.className="row-hidden";
-      tr.innerHTML="<td class='w-merge'>"+(i>0?"<input type='checkbox' "+(r.merge?"checked":"")+">":"")+"</td><td class='w-seq'>"+esc(r.seq)+"</td><td class='kr'>"+esc(r.kr)+"</td>"+
-        headers.map(function(h,ci){var cls=ci===0?"editable":"editable review";return "<td class='"+cls+"' contenteditable='true' data-col='"+ci+"'>"+esc(r.content[ci]||"")+"</td>"}).join("")+
-        "<td class='final'>"+esc(finalText(r))+"</td>";
+    els.tbody.innerHTML="";
+    var allowed={};visibleRows().forEach(function(i){allowed[i]=true});
+    for(var i=0;i<rows.length;i++){
+      if(!allowed[i])continue;
+      var group=[i],j=i+1;
+      while(j<rows.length&&rows[j].merge&&allowed[j]){group.push(j);j++}
+      var base=rows[i],tr=document.createElement("tr");tr.dataset.row=i;tr.dataset.rows=group.join(",");
+      var multi=group.length>1,note=multi?"<span class='merged-note'>已合并 "+group.length+" 行</span>":"";
+      var seq=multi?(base.seq+"~"+rows[group[group.length-1]].seq):base.seq;
+      var kr=group.map(function(ri){return rows[ri].kr}).filter(Boolean).join("\n");
+      tr.innerHTML="<td class='w-merge'>"+(i>0?"<input type='checkbox' "+(base.merge?"checked":"")+">":"")+note+"</td><td class='w-seq'>"+esc(seq)+"</td><td class='kr'>"+esc(kr)+"</td>"+
+        headers.map(function(h,ci){var cls=ci===0?"editable":"editable review";var text=group.map(function(ri){return rows[ri].content[ci]||""}).filter(Boolean).join("\n");return multi?"<td class='merged-cell' title='合并段请在拆分后编辑，避免误覆盖多行内容'>"+esc(text)+"</td>":"<td class='"+cls+"' contenteditable='true' data-col='"+ci+"'>"+esc(text)+"</td>"}).join("")+
+        "<td class='final'>"+esc(group.map(function(ri){return finalText(rows[ri])}).filter(Boolean).join(""))+"</td>";
       els.tbody.appendChild(tr);
-    });
+      i=group[group.length-1];
+    }
     els.searchCount.textContent=visibleRows().length<rows.length?visibleRows().length+"/"+rows.length:"";
   }
   function mergedPreview(){
@@ -145,10 +158,17 @@ button,input{font:inherit}.topbar{display:flex;gap:10px;align-items:center;paddi
     els.previewCount.textContent="· "+paras.length+" 段";
   }
   function renderStats(){var rows=current().rows,done=0,merged=0;rows.forEach(function(r){if(finalText(r))done++;if(r.merge)merged++});els.stats.textContent=rows.length?("终稿 "+done+"/"+rows.length+" · 合并 "+merged):"";els.sheetInfo.textContent=state.currentSheet||""}
-  function highlightRow(row){els.tbody.querySelectorAll(".row-active").forEach(function(x){x.classList.remove("row-active")});var tr=els.tbody.querySelector("tr[data-row='"+row+"']");if(tr){tr.classList.add("row-active");tr.scrollIntoView({block:"center",behavior:"smooth"})}}
+  function highlightRow(row){els.tbody.querySelectorAll(".row-active").forEach(function(x){x.classList.remove("row-active")});var tr=els.tbody.querySelector("tr[data-row='"+row+"']");if(!tr){els.tbody.querySelectorAll("tr[data-rows]").forEach(function(x){var list=(","+x.dataset.rows+",");if(list.indexOf(","+row+",")>=0)tr=x})}if(tr){tr.classList.add("row-active");tr.scrollIntoView({block:"center",behavior:"smooth"})}}
   function highlightPara(row){els.preview.querySelectorAll(".active").forEach(function(x){x.classList.remove("active")});for(var i=0;i<previewMap.length;i++){if(previewMap[i].indexOf(row)>=0){var p=els.preview.querySelector(".para[data-i='"+i+"']");if(p){p.classList.add("active");p.scrollIntoView({block:"center",behavior:"smooth"})}break}}}
-  function saveServer(){els.saveDot.className="save-dot saving";els.saveText.textContent="保存中...";if(sendWS({type:"save"}))return;postJson("/api/save",{}).then(function(){setDirty(false);toast("服务器已保存")}).catch(function(){setDirty(true);toast("保存失败")})}
+  function saveServer(){clearTimeout(autoSaveTimer);els.saveDot.className="save-dot saving";els.saveText.textContent="保存中...";if(sendWS({type:"save"}))return;postJson("/api/save",{}).then(function(){setDirty(false);toast("服务器已保存")}).catch(function(){setDirty(true);toast("保存失败")})}
   function exportTxt(){var text=mergedPreview().join("\r\n\r\n");var blob=new Blob(["\ufeff"+text],{type:"text/plain;charset=utf-8"});var a=document.createElement("a");a.href=URL.createObjectURL(blob);a.download=(state.currentSheet||"终稿")+".txt";a.click();setTimeout(function(){URL.revokeObjectURL(a.href)},1000)}
+  function uploadXlsx(file){
+    if(!file)return;
+    if(!/\.xlsx?$/i.test(file.name)){toast("请选择 xlsx/xls 表格文件");return}
+    if(!confirm("上传后会替换服务器当前协作主表，所有在线成员会自动刷新。确定上传吗？"))return;
+    els.uploadBtn.disabled=true;els.uploadBtn.textContent="上传中...";
+    fetch("/api/upload",{method:"POST",headers:{"Content-Type":"application/octet-stream","X-File-Name":encodeURIComponent(file.name)},body:file}).then(function(r){if(!r.ok)throw new Error(r.status);return r.json()}).then(function(data){applyState(data.state);setDirty(false);toast("表格已上传并同步")}).catch(function(){toast("上传失败，请检查表格格式")}).finally(function(){els.uploadBtn.disabled=false;els.uploadBtn.textContent="上传表格";els.uploadInput.value=""});
+  }
 
   els.tbody.addEventListener("input",function(e){var td=e.target.closest("[contenteditable]");if(!td)return;var row=Number(td.parentNode.dataset.row),col=Number(td.dataset.col),v=td.textContent;current().rows[row].content[col]=v;td.parentNode.querySelector(".final").textContent=finalText(current().rows[row]);renderPreview();renderStats();sendEdit(row,col,v)});
   els.tbody.addEventListener("change",function(e){if(e.target.type!=="checkbox")return;var row=Number(e.target.closest("tr").dataset.row);current().rows[row].merge=e.target.checked;renderAll(true);sendMerge(row,e.target.checked)});
@@ -157,7 +177,7 @@ button,input{font:inherit}.topbar{display:flex;gap:10px;align-items:center;paddi
   els.searchInput.oninput=function(){search=this.value.trim();renderTable();renderPreview()};
   els.refreshBtn.onclick=function(){renderPreview();toast("预览已刷新")};
   els.copyBtn.onclick=function(){navigator.clipboard.writeText(mergedPreview().join("\n\n")).then(function(){toast("已复制终稿")}).catch(function(){toast("复制失败")})};
-  els.saveBtn.onclick=saveServer;els.exportBtn.onclick=exportTxt;els.reconnectBtn.onclick=connect;
+  els.saveBtn.onclick=saveServer;els.downloadBtn.onclick=function(){location.href="/api/download"};els.uploadBtn.onclick=function(){els.uploadInput.click()};els.uploadInput.onchange=function(){uploadXlsx(this.files[0])};els.exportBtn.onclick=exportTxt;els.reconnectBtn.onclick=connect;
   els.userName.onchange=function(){var n=this.value.trim();if(n)sendWS({type:"setName",name:n})};
   document.addEventListener("keydown",function(e){if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==="s"){e.preventDefault();saveServer()}});
   setInterval(function(){if(dirty)saveServer()},300000);
