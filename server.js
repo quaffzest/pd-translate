@@ -6,7 +6,7 @@ const path = require('path');
 const fs = require('fs');
 
 const PORT = process.env.PORT || 3000;
-const DATA_DIR = path.join(__dirname, 'data');
+const DATA_DIR = process.env.DATA_DIR || (fs.existsSync('/var/data') ? '/var/data' : path.join(__dirname, 'data'));
 const LEGACY_FILE = path.join(DATA_DIR, '第01话_协作主表.xlsx');
 const WORKBOOK_DIR = path.join(DATA_DIR, 'workbooks');
 const META_FILE = path.join(WORKBOOK_DIR, '_meta.json');
@@ -161,6 +161,16 @@ function scheduleSave(id) {
   }, 3000));
 }
 
+function applyCellEdit(wbInfo, msg) {
+  const info = wbInfo.state.sheets[msg.sheet];
+  if (!info || !info.rows[msg.row]) return false;
+  const row = info.rows[msg.row];
+  if (msg.field === 'seq') row.seq = String(msg.value || '');
+  else if (msg.field === 'kr') row.kr = String(msg.value || '');
+  else row.content[msg.col] = String(msg.value || '');
+  return true;
+}
+
 function loadAllWorkbooks() {
   ensureSeedWorkbook();
   readMeta();
@@ -268,8 +278,7 @@ wss.on('connection', ws => {
       if (!wbInfo) return;
 
       if (msg.type === 'edit') {
-        const info = wbInfo.state.sheets[msg.sheet];
-        if (info && info.rows[msg.row]) info.rows[msg.row].content[msg.col] = String(msg.value || '');
+        applyCellEdit(wbInfo, msg);
         scheduleSave(wbInfo.id);
         broadcast(msg, ws, wbInfo.id);
       } else if (msg.type === 'merge') {
@@ -379,6 +388,33 @@ app.post('/api/rename', express.json(), (req, res) => {
     res.status(400).json({ ok: false, error: e.message });
   }
 });
+app.post('/api/move', express.json(), (req, res) => {
+  try {
+    const body = req.body || {};
+    const target = resolveFolder(body.target || '');
+    fs.mkdirSync(target.full, { recursive: true });
+    if (body.type === 'folder') {
+      const folder = resolveFolder(body.path || '');
+      if (!folder.clean) throw new Error('cannot_move_root');
+      if (target.full === folder.full || target.full.startsWith(folder.full + path.sep)) throw new Error('cannot_move_folder_into_itself');
+      const dest = path.join(target.full, path.basename(folder.full));
+      fs.renameSync(folder.full, dest);
+      loadAllWorkbooks();
+      return res.json({ ok: true });
+    }
+    const wbInfo = workbooks.get(String(body.id || ''));
+    if (!wbInfo) return res.status(404).json({ ok: false, error: 'workbook_not_found' });
+    const dest = path.join(target.full, path.basename(wbInfo.filePath));
+    fs.renameSync(wbInfo.filePath, dest);
+    wbInfo.filePath = dest;
+    wbInfo.folder = target.clean;
+    workbooks.set(wbInfo.id, wbInfo);
+    broadcastList();
+    res.json({ ok: true, workbook: workbookSummary(wbInfo) });
+  } catch (e) {
+    res.status(400).json({ ok: false, error: e.message });
+  }
+});
 app.get('/api/download/:id', (req, res) => {
   const wbInfo = workbooks.get(req.params.id);
   if (!wbInfo) return res.status(404).json({ ok: false, error: 'workbook_not_found' });
@@ -414,11 +450,9 @@ app.post('/api/upload', express.raw({ type: '*/*', limit: '80mb' }), (req, res) 
 app.post('/api/edit/:id', express.json(), (req, res) => {
   const wbInfo = workbooks.get(req.params.id);
   const msg = req.body || {};
-  const info = wbInfo && wbInfo.state.sheets[msg.sheet];
-  if (!info || !info.rows[msg.row]) return res.status(404).json({ ok: false, error: 'row_not_found' });
-  info.rows[msg.row].content[msg.col] = String(msg.value || '');
+  if (!wbInfo || !applyCellEdit(wbInfo, msg)) return res.status(404).json({ ok: false, error: 'row_not_found' });
   scheduleSave(wbInfo.id);
-  broadcast({ type: 'edit', workbookId: wbInfo.id, sheet: msg.sheet, row: msg.row, col: msg.col, value: String(msg.value || '') }, null, wbInfo.id);
+  broadcast({ type: 'edit', workbookId: wbInfo.id, sheet: msg.sheet, row: msg.row, col: msg.col, field: msg.field, value: String(msg.value || '') }, null, wbInfo.id);
   res.json({ ok: true });
 });
 app.post('/api/merge/:id', express.json(), (req, res) => {
