@@ -498,7 +498,7 @@ app.get('/auth/google/callback', (req, res, next) => {
 
       req.session.save(saveErr => {
         if (saveErr) return next(saveErr);
-        res.redirect('/');
+        res.redirect('/latest');
       });
     });
   })(req, res, next);
@@ -509,7 +509,7 @@ app.get('/auth/logout', (req, res) => {
   req.logout(() => {
     req.session.destroy(() => {
       res.clearCookie('pd.sid');
-      res.redirect('/');
+      res.redirect('/latest');
     });
   });
 });
