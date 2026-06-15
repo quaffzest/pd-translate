@@ -750,6 +750,45 @@ app.get('/api/drive/files', (req, res) => {
   }
 });
 
+// 上传本地 XLSX 到 Google Drive，并加载到当前工作台
+app.post('/api/drive/upload', express.raw({ type: '*/*', limit: '80mb' }), async (req, res) => {
+  if (!req.isAuthenticated()) {
+    return res.status(401).json({ ok: false, error: 'login_required' });
+  }
+  if (!req.body || !req.body.length) {
+    return res.status(400).json({ ok: false, error: 'empty_file' });
+  }
+
+  try {
+    const originalName = safeName(decodeURIComponent(req.header('X-File-Name') || '协作主表.xlsx'));
+    const state = parseWorkbookBuffer(req.body);
+    if (!state.sheetNames.length) throw new Error('no usable sheets');
+
+    const drive = driveService.getDriveService(req.user);
+    const rootId = await driveService.findOrCreateRootFolder(drive);
+    const uploaded = await driveService.uploadFile(drive, rootId, originalName, req.body);
+    const now = new Date().toISOString();
+    const wbInfo = {
+      id: uploaded.id,
+      name: uploaded.name || originalName,
+      folder: '',
+      filePath: null,
+      uploadedAt: uploaded.modifiedTime || now,
+      updatedAt: now,
+      state,
+      _driveFileId: uploaded.id,
+      _user: req.user,
+    };
+
+    workbooks.set(wbInfo.id, wbInfo);
+    broadcastList();
+    res.json({ ok: true, workbook: workbookSummary(wbInfo), state });
+  } catch (err) {
+    console.error('Drive upload error:', err);
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
 // 从 Google Drive 打开文件并加载到内存
 app.post('/api/drive/open/:fileId', (req, res) => {
   if (!req.isAuthenticated()) {
