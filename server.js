@@ -530,7 +530,24 @@ app.get('/api/user', (req, res) => {
   }
 });
 
-app.use(express.static(path.join(__dirname, 'public')));
+app.use((req, res, next) => {
+  if (req.path === '/' || req.path.endsWith('.html')) {
+    res.set('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+    res.set('Pragma', 'no-cache');
+    res.set('Expires', '0');
+  }
+  next();
+});
+
+app.use(express.static(path.join(__dirname, 'public'), {
+  setHeaders(res, filePath) {
+    if (filePath.endsWith('.html')) {
+      res.set('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+      res.set('Pragma', 'no-cache');
+      res.set('Expires', '0');
+    }
+  },
+}));
 app.get('/api/status', (req, res) => res.json({ clients: clients.size, wsPath: '/ws' }));
 app.get('/api/workbooks', (req, res) => res.json({ workbooks: listWorkbooks() }));
 app.get('/api/items', (req, res) => {
