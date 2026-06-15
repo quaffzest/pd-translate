@@ -49,32 +49,34 @@ async function findOrCreateRootFolder(drive) {
  * 包含整个 My Drive、pd-translate 文件夹，以及别人共享给我的文件。
  */
 async function listDriveFiles(drive, folderId) {
-  const xlsxQuery = `(mimeType='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' or name contains '.xlsx' or name contains '.xls') and trashed=false`;
-
-  // 1. 搜索整个 Drive 中的 XLSX 文件
-  const allSheets = await drive.files.list({
-    q: xlsxQuery,
+  const spreadsheetQuery = "(mimeType='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' or mimeType='application/vnd.ms-excel' or mimeType='application/vnd.google-apps.spreadsheet' or name contains '.xlsx' or name contains '.xls') and trashed=false";
+  const listOptions = {
     fields: 'files(id, name, mimeType, modifiedTime, createdTime, size, owners, shared)',
     orderBy: 'modifiedTime desc',
     pageSize: 100,
+    supportsAllDrives: true,
+    includeItemsFromAllDrives: true,
+  };
+
+  // 1. 搜索整个 Drive 中的表格文件
+  const allSheets = await drive.files.list({
+    ...listOptions,
+    q: spreadsheetQuery,
+    corpora: 'allDrives',
   });
 
   // 2. 列出自己的 pd-translate 文件夹中的文件，包含文件夹本身用于展示
   const appFolderFiles = await drive.files.list({
+    ...listOptions,
     q: `'${folderId}' in parents and trashed=false`,
-    fields: 'files(id, name, mimeType, modifiedTime, createdTime, size, owners, shared)',
-    orderBy: 'modifiedTime desc',
-    pageSize: 100,
   });
 
   // 3. 搜索共享给我的 XLSX 文件
   let sharedFiles = [];
   try {
     const shared = await drive.files.list({
-      q: `sharedWithMe=true and ${xlsxQuery}`,
-      fields: 'files(id, name, mimeType, modifiedTime, createdTime, size, owners, shared)',
-      orderBy: 'modifiedTime desc',
-      pageSize: 100,
+      ...listOptions,
+      q: `sharedWithMe=true and ${spreadsheetQuery}`,
     });
     sharedFiles = shared.data.files || [];
   } catch (e) {
@@ -136,6 +138,7 @@ async function uploadFile(drive, parentId, fileName, buffer) {
 async function updateFileContent(drive, fileId, buffer) {
   const res = await drive.files.update({
     fileId,
+    supportsAllDrives: true,
     media: {
       mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
       body: Readable.from(buffer),
@@ -149,8 +152,20 @@ async function updateFileContent(drive, fileId, buffer) {
  * 下载文件内容（返回 Buffer）
  */
 async function downloadFile(drive, fileId) {
+  const meta = await getFileInfo(drive, fileId);
+  if (meta.mimeType === 'application/vnd.google-apps.spreadsheet') {
+    const exported = await drive.files.export(
+      {
+        fileId,
+        mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      },
+      { responseType: 'arraybuffer' }
+    );
+    return Buffer.from(exported.data);
+  }
+
   const res = await drive.files.get(
-    { fileId, alt: 'media' },
+    { fileId, alt: 'media', supportsAllDrives: true },
     { responseType: 'arraybuffer' }
   );
   return Buffer.from(res.data);
@@ -162,6 +177,7 @@ async function downloadFile(drive, fileId) {
 async function getFileInfo(drive, fileId) {
   const res = await drive.files.get({
     fileId,
+    supportsAllDrives: true,
     fields: 'id, name, mimeType, modifiedTime, size, owners',
   });
   return res.data;

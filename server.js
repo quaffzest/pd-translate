@@ -771,6 +771,9 @@ app.get('/api/drive/files', (req, res) => {
         .filter(f => {
           const name = (f.name || '').toLowerCase();
           return f.mimeType === 'application/vnd.google-apps.folder' ||
+                 f.mimeType === 'application/vnd.google-apps.spreadsheet' ||
+                 f.mimeType === 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' ||
+                 f.mimeType === 'application/vnd.ms-excel' ||
                  name.endsWith('.xlsx') || name.endsWith('.xls');
         })
         .map(f => ({
