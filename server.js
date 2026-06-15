@@ -30,12 +30,14 @@ function loadXlsx() {
       if (hn === '序' || hn === '韩文原文' || hn === '合并') continue;
       ch.push({ name: hn, idx: ci });
     }
+    const mi = h.findIndex(x => String(x).trim() === '合并');
     let sheetRows = [];
     for (let j = 0; j < dr.length; j++) {
       const r = dr[j];
       let content = [];
       for (let k = 0; k < ch.length; k++) content.push(String(r[ch[k].idx] || '').trim());
-      sheetRows.push({ seq: String(r[si] || '').trim(), kr: String(r[ki] || '').trim(), content: content, merge: false });
+      const mergeValue = mi >= 0 ? String(r[mi] || '').trim().toUpperCase() : '';
+      sheetRows.push({ seq: String(r[si] || '').trim(), kr: String(r[ki] || '').trim(), content: content, merge: mergeValue === 'Y' || mergeValue === 'TRUE' || mergeValue === '1' });
     }
     if (sheetRows.length > 0) { sheetsData[sn] = { headers: ch, rows: sheetRows }; sheetNames.push(sn); }
   }
@@ -124,6 +126,26 @@ app.use(express.static(path.join(__dirname, 'public')));
 app.get('/api/status', (req, res) => { res.json({ clients: clients.size, wsPath: '/ws' }); });
 app.post('/api/data', express.json(), (req, res) => {
   res.json({ state: { sheets: sheetsData, sheetNames: sheetNames, currentSheet: currentSheet } });
+});
+app.post('/api/edit', express.json(), (req, res) => {
+  const msg = req.body || {};
+  const info = sheetsData[msg.sheet];
+  if (!info || !info.rows[msg.row]) return res.status(404).json({ ok: false, error: 'row_not_found' });
+  info.rows[msg.row].content[msg.col] = String(msg.value || '');
+  broadcast({ type: 'edit', sheet: msg.sheet, row: msg.row, col: msg.col, value: String(msg.value || '') });
+  res.json({ ok: true });
+});
+app.post('/api/merge', express.json(), (req, res) => {
+  const msg = req.body || {};
+  const info = sheetsData[msg.sheet];
+  if (!info || !info.rows[msg.row]) return res.status(404).json({ ok: false, error: 'row_not_found' });
+  info.rows[msg.row].merge = !!msg.value;
+  broadcast({ type: 'merge', sheet: msg.sheet, row: msg.row, value: !!msg.value });
+  res.json({ ok: true });
+});
+app.post('/api/save', express.json(), (req, res) => {
+  saveXlsx();
+  res.json({ ok: true, time: new Date().toLocaleTimeString() });
 });
 
 loadXlsx();
