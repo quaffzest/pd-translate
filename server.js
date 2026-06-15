@@ -359,6 +359,7 @@ function broadcastList() {
 }
 
 const app = express();
+app.set('trust proxy', 1); // 信任 Cloudflare/Render 代理，确保 secure cookie 生效
 const server = http.createServer(app);
 const wss = new WebSocketServer({ server, path: '/ws' });
 
