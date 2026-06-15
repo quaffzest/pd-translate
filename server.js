@@ -470,6 +470,11 @@ wss.on('connection', ws => {
         return;
       }
 
+      if (msg.type === 'leave') {
+        client.workbookId = '';
+        return;
+      }
+
       if (msg.type === 'open') {
         const wbInfo = workbooks.get(msg.workbookId);
         if (!wbInfo) return ws.send(JSON.stringify({ type: 'error', error: 'workbook_not_found' }));
