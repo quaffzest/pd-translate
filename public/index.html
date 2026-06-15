@@ -16,6 +16,8 @@
 .preview-head{display:flex;justify-content:space-between;gap:10px;align-items:center;padding:10px 14px;border-bottom:1px solid var(--line);font-size:13px;color:var(--muted)}.preview-actions{display:flex;gap:6px}.mini{border:1px solid var(--line);border-radius:5px;background:#fff;color:var(--muted);padding:4px 8px;cursor:pointer}.mini:hover{background:#f1f3f7}.preview{flex:1;overflow:auto;padding:14px 18px}.para{display:flex;gap:7px;margin:0 0 8px;padding:6px 8px;border-radius:6px;line-height:1.85;cursor:pointer;font-family:"Noto Serif SC","Source Han Serif SC",SimSun,serif}.para:hover,.para.active{background:#eaf0ff}.para.active{box-shadow:-3px 0 0 #f0c040}.pnum{width:38px;flex:none;color:#98a2b3;font:12px system-ui}.ptext{flex:1;white-space:pre-wrap}.pa{display:flex;flex-direction:column;gap:3px;opacity:0}.para:hover .pa{opacity:1}.pa button{width:28px;height:26px;border:1px solid var(--line);border-radius:5px;background:#fff;cursor:pointer}
 .statusbar{display:flex;gap:18px;align-items:center;padding:6px 14px;border-top:1px solid var(--line);background:var(--surface);font-size:12px;color:var(--muted)}.save-dot{width:8px;height:8px;border-radius:50%;display:inline-block;background:var(--ok)}.save-dot.dirty{background:var(--bad)}.save-dot.saving{background:var(--warn)}.toast{position:fixed;left:50%;bottom:42px;transform:translateX(-50%);background:#202633;color:#fff;border-radius:8px;padding:9px 18px;font-size:13px;opacity:0;pointer-events:none;transition:opacity .18s}.toast.show{opacity:1}
 @media(max-width:900px){.main{flex-direction:column}.left,.right{flex:1;min-width:0}.right{border-top:1px solid var(--line)}.conn{margin-left:0;width:100%;justify-content:space-between}}
+.auth-area{margin-left:auto;display:flex;align-items:center;gap:8px}.user-info{display:flex;align-items:center;gap:6px}.user-info.hidden{display:none}.avatar{width:28px;height:28px;border-radius:50%}
+.modal.hidden{display:none}.modal{position:fixed;z-index:2000;inset:0;display:flex;align-items:center;justify-content:center}.modal-overlay{position:absolute;inset:0;background:rgba(0,0,0,.45)}.modal-box{position:relative;background:var(--surface);border-radius:12px;box-shadow:0 20px 60px rgba(0,0,0,.25);width:520px;max-width:90vw;max-height:80vh;display:flex;flex-direction:column}.modal-head{display:flex;justify-content:space-between;align-items:center;padding:14px 18px;border-bottom:1px solid var(--line)}.modal-head h3{margin:0;font-size:15px}.drive-file-list{flex:1;overflow:auto;padding:10px}.drive-file-item{display:flex;align-items:center;gap:8px;padding:10px 12px;border-radius:8px;cursor:pointer;border:1px solid transparent}.drive-file-item:hover{background:#eef4ff;border-color:var(--brand)}.drive-file-item .small{margin-left:auto;color:var(--muted)}.modal-foot{padding:10px 18px;border-top:1px solid var(--line);text-align:center}
 </style>
 </head>
 <body>
@@ -29,6 +31,14 @@
   <button id="exportBtn" class="btn sec hidden">导出终稿 txt</button>
   <button id="reconnectBtn" class="btn sec">重新连接</button>
   <input id="uploadInput" type="file" accept=".xlsx,.xls" hidden>
+  <div id="authArea" class="auth-area">
+    <a id="loginBtn" class="btn" href="/auth/google">🔵 登录 Google</a>
+    <div id="userInfo" class="user-info hidden">
+      <img id="userAvatar" class="avatar" src="" alt="">
+      <span id="userDisplayName"></span>
+      <a id="logoutBtn" class="btn sec" href="/auth/logout">登出</a>
+    </div>
+  </div>
   <div class="conn">
     <span id="connDot" class="dot"></span>
     <span id="connText" class="mode">未连接</span>
@@ -46,6 +56,7 @@
       <button id="upFolderBtn" class="btn sec">上一级</button>
       <button id="newFolderBtn" class="btn sec">新建文件夹</button>
       <button id="refreshListBtn" class="btn sec">刷新</button>
+      <button id="driveOpenBtn" class="btn sec hidden">📂 从 Google Drive 打开</button>
     </div>
     <div id="crumbs" class="crumbs">当前位置：根目录</div>
   </div>
@@ -73,6 +84,23 @@
 </div>
 <div id="contextMenu" class="ctx hidden"></div>
 <div id="toast" class="toast"></div>
+
+<!-- Google Drive 文件选择器模态框 -->
+<div id="driveModal" class="modal hidden">
+  <div class="modal-overlay"></div>
+  <div class="modal-box">
+    <div class="modal-head">
+      <h3>📂 从 Google Drive 选择文件</h3>
+      <button id="driveModalClose" class="mini">✕</button>
+    </div>
+    <div id="driveFileList" class="drive-file-list">
+      <div class="empty">加载中...</div>
+    </div>
+    <div class="modal-foot small">
+      包含你的文件 + 别人共享给你的文件。双击打开。
+    </div>
+  </div>
+</div>
 
 <script>
 (function(){
@@ -117,6 +145,7 @@
   function openWorkbook(id){var known=workbooks.find(function(w){return w.id===id});currentWorkbook=known||{id:id,name:id};if(sendWS({type:"open",workbookId:id}))return;postJson("/api/data/"+encodeURIComponent(id),{}).then(function(data){applyState(data.workbook,data.state)}).catch(function(){toast("打开表格失败")})}
 
   function connect(){clearTimeout(wsTimer);clearTimeout(reconnectTimer);stopPolling();if(ws){try{ws.close()}catch(e){}}setConn("offline","连接中...");wsTimer=setTimeout(function(){if(!ws||ws.readyState!==1){try{ws&&ws.close()}catch(e){};startPolling("WebSocket 超时，已切换轮询")}},8000);try{ws=new WebSocket((location.protocol==="https:"?"wss://":"ws://")+location.host+"/ws");ws.onopen=function(){clearTimeout(wsTimer);setConn("ws","WebSocket 已连接");if(els.userName.value.trim())sendWS({type:"setName",name:els.userName.value.trim()});if(currentWorkbook)sendWS({type:"open",workbookId:currentWorkbook.id})};ws.onmessage=function(ev){handleMessage(JSON.parse(ev.data))};ws.onerror=function(){setConn("error","WebSocket 失败")};ws.onclose=function(){clearTimeout(wsTimer);if(mode==="ws"){setConn("offline","已断线，重连中...");reconnectTimer=setTimeout(connect,3000)}else if(mode!=="poll"){startPolling("WebSocket 不可用，已切换轮询")}}}catch(e){startPolling("WebSocket 不可用，已切换轮询")}}
+  function checkAuth(){fetch("/api/user").then(function(r){return r.json()}).then(function(data){if(data.loggedIn){els("loginBtn").classList.add("hidden");var ui=els("userInfo");ui.classList.remove("hidden");els("userDisplayName").textContent=data.user.displayName;els("userAvatar").src=data.user.avatar;els("driveOpenBtn")&&els("driveOpenBtn").classList.remove("hidden")}}).catch(function(){})}
   function sendWS(msg){if(ws&&ws.readyState===1){ws.send(JSON.stringify(msg));return true}return false}
   function handleMessage(msg){if(msg.type==="workbookList"){if(!currentWorkbook)loadItems();return}if(msg.type==="userCount"){els.onlineText.textContent=msg.count+" 人在线";return}if(msg.type==="init"){applyState(msg.workbook,msg.state);return}if(msg.type==="saved"){setDirty(false);toast("服务器已保存 "+(msg.time||""));return}if(msg.type==="edit"){var a=state.sheets[msg.sheet];if(a&&a.rows[msg.row]){if(msg.field==="seq")a.rows[msg.row].seq=String(msg.value||"");else if(msg.field==="kr")a.rows[msg.row].kr=String(msg.value||"");else a.rows[msg.row].content[msg.col]=String(msg.value||"");if(msg.sheet===state.currentSheet)renderAll(true)}return}if(msg.type==="style"){applyStyleLocal(msg);renderAll(true);return}if(msg.type==="merge"){var b=state.sheets[msg.sheet];if(b&&b.rows[msg.row]){b.rows[msg.row].merge=!!msg.value;if(msg.sheet===state.currentSheet)renderAll(true)}return}if(msg.type==="row"){applyRowLocal(msg.action,msg.row);renderAll(true);return}if(msg.type==="switchSheet"&&state.sheets[msg.sheet]){state.currentSheet=msg.sheet;renderAll(true)}}
   function startPolling(msg){clearTimeout(wsTimer);if(pollTimer)return;setConn("poll","轮询模式");if(msg)toast(msg);pollTimer=setInterval(function(){if(currentWorkbook)loadCurrentQuiet();fetch("/api/status").then(function(r){return r.json()}).then(function(s){els.onlineText.textContent=(s.clients||0)+" 人在线"}).catch(function(){})},3000)}
@@ -173,9 +202,16 @@
   els.searchInput.oninput=function(){search=this.value.trim();renderTable();renderPreview();locateSearch()};
   document.addEventListener("keydown",function(e){if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==="s"){e.preventDefault();saveServer()}});
   function refreshOnline(){fetch("/api/status").then(function(r){return r.json()}).then(function(s){els.onlineText.textContent=(s.clients||0)+" 人在线"}).catch(function(){})}
+  // Google Drive 文件选择器
+  var els2={};["driveOpenBtn","driveModal","driveFileList","driveModalClose"].forEach(function(id){els2[id]=document.getElementById(id)});
+  els2.driveOpenBtn.onclick=function(){document.getElementById("driveFileList").innerHTML='<div class="empty">加载中...</div>';document.getElementById("driveModal").classList.remove("hidden");fetch("/api/drive/files").then(function(r){return r.json()}).then(function(data){if(!data.ok){document.getElementById("driveFileList").innerHTML='<div class="empty">加载失败: '+(data.error||"")+'</div>';return}var files=data.files||[];if(!files.length){document.getElementById("driveFileList").innerHTML='<div class="empty">Google Drive 中没有 XLSX 文件。共享文件也会显示在这里。</div>';return}document.getElementById("driveFileList").innerHTML=files.map(function(f){var icon=f.isFolder?"📁":"📄";return '<div class="drive-file-item" data-id="'+esc(f.id)+'" data-name="'+esc(f.name)+'" data-isfolder="'+!!f.isFolder+'">'+icon+' '+esc(f.name)+' <span class="small">'+esc(fmtTime(f.modifiedTime))+'</span></div>'}).join("")}).catch(function(){document.getElementById("driveFileList").innerHTML='<div class="empty">加载失败，请检查网络</div>'})};
+  els2.driveModalClose.onclick=function(){document.getElementById("driveModal").classList.add("hidden")};
+  document.getElementById("driveModal").querySelector(".modal-overlay").onclick=function(){document.getElementById("driveModal").classList.add("hidden")};
+  document.getElementById("driveFileList").addEventListener("dblclick",function(e){var item=e.target.closest(".drive-file-item");if(!item)return;if(item.dataset.isfolder==="true"){toast("文件夹暂不支持");return}document.getElementById("driveModal").classList.add("hidden");openDriveFile(item.dataset.id,item.dataset.name)});
+  function openDriveFile(fileId,name){els.uploadBtn.disabled=true;fetch("/api/drive/open/"+encodeURIComponent(fileId)+"?name="+encodeURIComponent(name),{method:"POST"}).then(function(r){return r.json()}).then(function(data){if(!data.ok){toast("打开失败: "+(data.error||""));return}applyState(data.workbook,data.state);toast("已从 Google Drive 打开: "+name)}).catch(function(){toast("打开 Drive 文件失败")}).finally(function(){els.uploadBtn.disabled=false})}
   setInterval(function(){if(dirty)saveServer()},300000);
   statusTimer=setInterval(refreshOnline,3000);refreshOnline();
-  connect();showLibrary();
+  connect();showLibrary();checkAuth();
 })();
 </script>
 </body>

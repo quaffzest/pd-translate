@@ -4,6 +4,11 @@ const { WebSocketServer } = require('ws');
 const XLSX = require('xlsx');
 const path = require('path');
 const fs = require('fs');
+const session = require('express-session');
+const passport = require('passport');
+const GoogleStrategy = require('passport-google-oauth20').Strategy;
+const googleConfig = require('./config/google');
+const driveService = require('./services/driveService');
 
 const PORT = process.env.PORT || 3000;
 const DATA_DIR = process.env.DATA_DIR || (fs.existsSync('/var/data') ? '/var/data' : path.join(__dirname, 'data'));
@@ -150,7 +155,30 @@ function writeWorkbook(wbInfo) {
     }
     XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(data), sn);
   }
-  XLSX.writeFile(wb, wbInfo.filePath);
+  
+  const buffer = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
+  
+  // 如果是 Google Drive 文件，同步到 Drive
+  if (wbInfo._driveFileId && wbInfo._user) {
+    try {
+      const drive = driveService.getDriveService(wbInfo._user);
+      driveService.updateFileContent(drive, wbInfo._driveFileId, buffer)
+        .then(result => {
+          console.log('Synced to Drive:', wbInfo._driveFileId);
+        })
+        .catch(err => {
+          console.error('Drive sync failed:', err.message);
+        });
+    } catch (e) {
+      console.error('Drive sync error:', e.message);
+    }
+  }
+  
+  // 本地文件保存（如果有 filePath）
+  if (wbInfo.filePath) {
+    fs.writeFileSync(wbInfo.filePath, buffer);
+  }
+  
   wbInfo.updatedAt = new Date().toISOString();
 }
 
@@ -333,6 +361,40 @@ const app = express();
 const server = http.createServer(app);
 const wss = new WebSocketServer({ server, path: '/ws' });
 
+// ---- Session & Authentication ----
+
+app.use(session({
+  secret: process.env.SESSION_SECRET || 'dev-secret-change-me-in-production',
+  resave: false,
+  saveUninitialized: false,
+  cookie: {
+    secure: process.env.NODE_ENV === 'production',
+    maxAge: 24 * 60 * 60 * 1000, // 24 hours
+  },
+}));
+
+app.use(passport.initialize());
+app.use(passport.session());
+
+passport.use(new GoogleStrategy({
+  clientID: googleConfig.clientID,
+  clientSecret: googleConfig.clientSecret,
+  callbackURL: googleConfig.callbackURL,
+}, (accessToken, refreshToken, profile, done) => {
+  const user = {
+    id: profile.id,
+    displayName: profile.displayName,
+    email: profile.emails[0].value,
+    avatar: profile.photos[0].value,
+    accessToken,
+    refreshToken,
+  };
+  return done(null, user);
+}));
+
+passport.serializeUser((user, done) => done(null, user));
+passport.deserializeUser((user, done) => done(null, user));
+
 wss.on('connection', ws => {
   const cid = 'user_' + Date.now().toString(36);
   clients.set(ws, { name: cid, workbookId: '' });
@@ -395,6 +457,48 @@ wss.on('connection', ws => {
     clients.delete(ws);
     broadcast({ type: 'userCount', count: clients.size });
   });
+});
+
+// ---- Auth Routes ----
+
+// 发起 Google 登录
+app.get('/auth/google',
+  passport.authenticate('google', {
+    scope: [
+      'profile',
+      'email',
+      'https://www.googleapis.com/auth/drive.file',
+    ],
+    accessType: 'offline',
+    prompt: 'consent',
+  })
+);
+
+// Google 回调
+app.get('/auth/google/callback',
+  passport.authenticate('google', { failureRedirect: '/' }),
+  (req, res) => { res.redirect('/'); }
+);
+
+// 登出
+app.get('/auth/logout', (req, res) => {
+  req.logout(() => { res.redirect('/'); });
+});
+
+// 获取当前用户信息
+app.get('/api/user', (req, res) => {
+  if (req.isAuthenticated()) {
+    res.json({
+      loggedIn: true,
+      user: {
+        displayName: req.user.displayName,
+        email: req.user.email,
+        avatar: req.user.avatar,
+      },
+    });
+  } else {
+    res.json({ loggedIn: false });
+  }
 });
 
 app.use(express.static(path.join(__dirname, 'public')));
@@ -578,6 +682,80 @@ app.post('/api/save/:id', express.json(), (req, res) => {
   writeWorkbook(wbInfo);
   broadcastList();
   res.json({ ok: true, time: new Date().toLocaleTimeString() });
+});
+
+// ---- Google Drive API Routes ----
+
+// 获取 Google Drive 上的 XLSX 文件列表（含共享文件）
+app.get('/api/drive/files', (req, res) => {
+  if (!req.isAuthenticated()) {
+    return res.status(401).json({ ok: false, error: 'login_required' });
+  }
+  try {
+    const drive = driveService.getDriveService(req.user);
+    driveService.findOrCreateRootFolder(drive).then(rootId => {
+      return driveService.listDriveFiles(drive, rootId);
+    }).then(files => {
+      const items = files
+        .filter(f => {
+          const name = (f.name || '').toLowerCase();
+          return f.mimeType === 'application/vnd.google-apps.folder' ||
+                 name.endsWith('.xlsx') || name.endsWith('.xls');
+        })
+        .map(f => ({
+          id: f.id,
+          name: f.name,
+          mimeType: f.mimeType,
+          isFolder: f.mimeType === 'application/vnd.google-apps.folder',
+          size: f.size,
+          modifiedTime: f.modifiedTime,
+          owners: f.owners,
+        }));
+      res.json({ ok: true, files: items });
+    }).catch(err => {
+      console.error('Drive list error:', err);
+      res.status(500).json({ ok: false, error: err.message });
+    });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
+// 从 Google Drive 打开文件并加载到内存
+app.post('/api/drive/open/:fileId', (req, res) => {
+  if (!req.isAuthenticated()) {
+    return res.status(401).json({ ok: false, error: 'login_required' });
+  }
+  try {
+    const drive = driveService.getDriveService(req.user);
+    driveService.downloadFile(drive, req.params.fileId)
+      .then(buffer => {
+        const state = parseWorkbookBuffer(buffer);
+        if (!state.sheetNames.length) throw new Error('no usable sheets');
+        // 获取文件信息
+        return driveService.getFileInfo(drive, req.params.fileId).then(fileInfo => {
+          const id = req.params.fileId;
+          workbooks.set(id, {
+            id,
+            name: fileInfo.name || decodeURIComponent(req.query.name || 'GoogleDrive文件'),
+            folder: '',
+            filePath: null,
+            uploadedAt: fileInfo.modifiedTime || new Date().toISOString(),
+            updatedAt: new Date().toISOString(),
+            state,
+            _driveFileId: id,
+            _user: req.user, // 保存用户引用以用于后续保存
+          });
+          res.json({ ok: true, workbook: workbookSummary(workbooks.get(id)), state });
+        });
+      })
+      .catch(err => {
+        console.error('Drive open error:', err);
+        res.status(500).json({ ok: false, error: err.message });
+      });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
 });
 
 loadAllWorkbooks();
