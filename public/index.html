@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+﻿<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
@@ -15,12 +15,26 @@ var userNameInput=document.getElementById("userNameInput");
 
 userNameInput.onchange=function(){if(this.value.trim()&&ws&&ws.readyState===1)ws.send(JSON.stringify({type:"setName",name:this.value.trim()}))};
 
+var wsConnTimer=null;
+function startPolling(){
+  if(connDot)connDot.className="dot yellow";
+  if(connLabel)connLabel.textContent="轮询模式";
+  loadViaHttp();
+  setInterval(loadViaHttp,3000);
+}
+function loadViaHttp(){
+  fetch("/api/data",{method:"POST",headers:{"Content-Type":"application/json"}}).then(function(r){return r.json()}).then(function(data){
+    if(data.state&&data.state.sheets){allData={};sheetNames=[];for(var sn in data.state.sheets){allData[sn]={headers:data.state.sheets[sn].headers,rows:data.state.sheets[sn].rows};sheetNames.push(sn)}contentHeaders=allData[data.state.currentSheet].headers;switchSheet(data.state.currentSheet);connDot.className="dot green";if(!connected)showToast("已加载服务器数据");connected=true}
+  }).catch(function(){})
+}
+
 function connectWS(){
+  wsConnTimer=setTimeout(function(){if(!ws||ws.readyState!==1){if(ws)ws.close();startPolling()}},8000);
   var protocol=location.protocol==="https:"?"wss://":"ws://";
   var url=protocol+location.host;
   try{
-    ws=new WebSocket(url);
-    ws.onopen=function(){
+    ws=new WebSocket(url+"/ws");
+    ws.onopen=function(){if(wsConnTimer)clearTimeout(wsConnTimer);
       connected=true;
       connDot.className="dot green";
       connLabel.textContent="已连接";
