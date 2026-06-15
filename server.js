@@ -827,7 +827,12 @@ app.post('/api/drive/upload', express.raw({ type: '*/*', limit: '80mb' }), async
 
     workbooks.set(wbInfo.id, wbInfo);
     broadcastList();
-    res.json({ ok: true, workbook: workbookSummary(wbInfo), state });
+    res.json({
+      ok: true,
+      workbook: workbookSummary(wbInfo),
+      driveFile: uploaded,
+      state,
+    });
   } catch (err) {
     console.error('Drive upload error:', err);
     res.status(500).json({ ok: false, error: err.message });

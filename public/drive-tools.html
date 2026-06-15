@@ -75,8 +75,9 @@ body{margin:0;background:#f4f6f8;color:#172033;font-family:system-ui,-apple-syst
     fetch("/api/drive/upload",{method:"POST",headers:{"Content-Type":"application/octet-stream","X-File-Name":encodeURIComponent(file.name)},body:file})
       .then(function(r){return r.json().then(function(data){if(!r.ok||!data.ok)throw new Error(data.error||r.status);return data})})
       .then(function(data){
-        setStatus("uploadStatus","已上传到 Google Drive，正在打开工作台...",true);
-        location.href="/latest#drive="+encodeURIComponent(data.workbook.id);
+        var link=data.driveFile&&data.driveFile.webViewLink;
+        $("uploadStatus").innerHTML='<span class="ok">已上传到 Google Drive：'+esc(data.workbook.name)+'</span>'+(link?' · <a href="'+esc(link)+'" target="_blank" rel="noopener">在 Google Drive 中打开</a>':'');
+        loadFiles();
       })
       .catch(function(e){setStatus("uploadStatus","上传失败: "+(e.message||"请检查登录状态"),false)})
       .finally(function(){$("uploadBtn").disabled=false;$("uploadBtn").textContent="上传 .xlsx 到 Google Drive";$("uploadInput").value=""});

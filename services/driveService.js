@@ -127,7 +127,7 @@ async function uploadFile(drive, parentId, fileName, buffer) {
       mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
       body: Readable.from(buffer),
     },
-    fields: 'id, name, modifiedTime, size',
+    fields: 'id, name, modifiedTime, size, webViewLink',
   });
   return res.data;
 }
