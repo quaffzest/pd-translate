@@ -125,7 +125,7 @@ async function listDriveItems(drive, folderId) {
   const parentId = folderId || 'root';
   const res = await drive.files.list({
     q: `'${parentId}' in parents and trashed=false`,
-    fields: 'files(id, name, mimeType, modifiedTime, createdTime, size, owners, shared, parents, webViewLink)',
+    fields: 'files(id, name, mimeType, modifiedTime, createdTime, size, owners, shared, parents, webViewLink, version, headRevisionId, md5Checksum)',
     orderBy: 'folder,name',
     pageSize: 200,
     supportsAllDrives: true,
@@ -171,7 +171,7 @@ async function uploadFile(drive, parentId, fileName, buffer) {
       mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
       body: Readable.from(buffer),
     },
-    fields: 'id, name, modifiedTime, size, webViewLink',
+    fields: 'id, name, modifiedTime, size, webViewLink, version, headRevisionId, md5Checksum',
   });
   return res.data;
 }
@@ -237,7 +237,7 @@ async function updateFileContent(drive, fileId, buffer) {
       mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
       body: Readable.from(buffer),
     },
-    fields: 'id, modifiedTime',
+    fields: 'id, modifiedTime, version, headRevisionId, md5Checksum',
   });
   return res.data;
 }
@@ -272,7 +272,7 @@ async function getFileInfo(drive, fileId) {
   const res = await drive.files.get({
     fileId,
     supportsAllDrives: true,
-    fields: 'id, name, mimeType, modifiedTime, size, owners, parents, webViewLink',
+    fields: 'id, name, mimeType, modifiedTime, size, owners, parents, webViewLink, version, headRevisionId, md5Checksum',
   });
   return res.data;
 }

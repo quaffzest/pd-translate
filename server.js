@@ -178,10 +178,12 @@ async function syncWorkbookToDrive(wbInfo) {
     await driveService.updateGoogleSheetValues(sheets, wbInfo._driveFileId, wbInfo.state);
     const updatedInfo = await driveService.getFileInfo(drive, wbInfo._driveFileId);
     wbInfo._driveModifiedTime = updatedInfo.modifiedTime;
+    wbInfo._driveSignature = driveSignature(updatedInfo);
   } else {
     const buffer = workbookToBuffer(wbInfo);
     const updatedInfo = await driveService.updateFileContent(drive, wbInfo._driveFileId, buffer);
     wbInfo._driveModifiedTime = updatedInfo && updatedInfo.modifiedTime || wbInfo._driveModifiedTime;
+    wbInfo._driveSignature = driveSignature(updatedInfo) || wbInfo._driveSignature;
     wbInfo._sourceBuffer = buffer;
   }
   wbInfo.driveSync = { status: 'synced', time: new Date().toISOString(), error: '' };
@@ -210,7 +212,9 @@ async function refreshWorkbookFromDrive(wbInfo) {
   try {
     const drive = driveService.getDriveService(wbInfo._user);
     const fileInfo = await driveService.getFileInfo(drive, wbInfo._driveFileId);
-    if (!fileInfo.modifiedTime || fileInfo.modifiedTime === wbInfo._driveModifiedTime) return false;
+    const remoteSignature = driveSignature(fileInfo);
+    if (remoteSignature && remoteSignature === wbInfo._driveSignature) return false;
+    if (!remoteSignature && fileInfo.modifiedTime === wbInfo._driveModifiedTime) return false;
 
     const localRevision = wbInfo._revision || 0;
     const syncedRevision = wbInfo._lastSyncedRevision || 0;
@@ -236,6 +240,7 @@ async function refreshWorkbookFromDrive(wbInfo) {
     wbInfo.state = state;
     wbInfo._driveMimeType = fileInfo.mimeType;
     wbInfo._driveModifiedTime = fileInfo.modifiedTime;
+    wbInfo._driveSignature = remoteSignature;
     wbInfo._sourceBuffer = fileInfo.mimeType === 'application/vnd.google-apps.spreadsheet' ? null : sourceBuffer;
     wbInfo.updatedAt = new Date().toISOString();
     wbInfo.uploadedAt = fileInfo.modifiedTime || wbInfo.uploadedAt;
@@ -456,6 +461,16 @@ function workbookSummary(wbInfo) {
     driveFileId: wbInfo._driveFileId || '',
     driveSync: wbInfo.driveSync || null,
   };
+}
+
+function driveSignature(file) {
+  if (!file) return '';
+  return [
+    file.modifiedTime || '',
+    file.version || '',
+    file.headRevisionId || '',
+    file.md5Checksum || '',
+  ].join('|');
 }
 
 function listWorkbooks() {
@@ -912,6 +927,9 @@ app.post('/api/save/:id', express.json(), async (req, res) => {
   const wbInfo = workbooks.get(req.params.id);
   if (!wbInfo) return res.status(404).json({ ok: false, error: 'workbook_not_found' });
   try {
+    if (wbInfo._driveFileId && req.isAuthenticated && req.isAuthenticated()) {
+      wbInfo._user = req.user;
+    }
     const sync = await forceSaveWorkbook(wbInfo);
     if (sync) broadcast({ type: 'driveSync', workbookId: wbInfo.id, sync }, null, wbInfo.id);
     broadcastList();
@@ -944,6 +962,9 @@ function driveItemSummary(file) {
     size: file.size,
     modifiedTime: file.modifiedTime,
     createdTime: file.createdTime,
+    version: file.version,
+    headRevisionId: file.headRevisionId,
+    md5Checksum: file.md5Checksum,
     owners: file.owners,
     webViewLink: file.webViewLink,
   };
@@ -1052,6 +1073,7 @@ app.post('/api/drive/upload', express.raw({ type: '*/*', limit: '80mb' }), async
       _driveFileId: uploaded.id,
       _driveMimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
       _driveModifiedTime: uploaded.modifiedTime || now,
+      _driveSignature: driveSignature(uploaded),
       _sourceBuffer: Buffer.from(req.body),
       _user: req.user,
       driveSync: { status: 'synced', time: now, error: '' },
@@ -1081,9 +1103,10 @@ app.post('/api/drive/open/:fileId', async (req, res) => {
     const workbookId = 'drive:' + req.params.fileId;
     const existing = workbooks.get(workbookId);
     const fileInfo = await driveService.getFileInfo(drive, req.params.fileId);
+    const remoteSignature = driveSignature(fileInfo);
 
-    if (existing && existing._driveModifiedTime === fileInfo.modifiedTime) {
-      if (!existing._user) existing._user = req.user;
+    if (existing && ((existing._driveSignature && existing._driveSignature === remoteSignature) || (!remoteSignature && existing._driveModifiedTime === fileInfo.modifiedTime))) {
+      existing._user = req.user;
       return res.json({ ok: true, workbook: workbookSummary(existing), state: existing.state });
     }
 
@@ -1106,6 +1129,7 @@ app.post('/api/drive/open/:fileId', async (req, res) => {
       _driveFileId: req.params.fileId,
       _driveMimeType: fileInfo.mimeType,
       _driveModifiedTime: fileInfo.modifiedTime,
+      _driveSignature: remoteSignature,
       _sourceBuffer: fileInfo.mimeType === 'application/vnd.google-apps.spreadsheet' ? null : sourceBuffer,
       _user: req.user,
       driveSync: { status: 'synced', time: new Date().toISOString(), error: '' },
