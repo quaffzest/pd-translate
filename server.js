@@ -175,9 +175,12 @@ async function syncWorkbookToDrive(wbInfo) {
   if (wbInfo._driveMimeType === 'application/vnd.google-apps.spreadsheet') {
     const sheets = driveService.getSheetsService(wbInfo._user);
     await driveService.updateGoogleSheetValues(sheets, wbInfo._driveFileId, wbInfo.state);
+    const updatedInfo = await driveService.getFileInfo(drive, wbInfo._driveFileId);
+    wbInfo._driveModifiedTime = updatedInfo.modifiedTime;
   } else {
     const buffer = workbookToBuffer(wbInfo);
-    await driveService.updateFileContent(drive, wbInfo._driveFileId, buffer);
+    const updatedInfo = await driveService.updateFileContent(drive, wbInfo._driveFileId, buffer);
+    wbInfo._driveModifiedTime = updatedInfo && updatedInfo.modifiedTime || wbInfo._driveModifiedTime;
     wbInfo._sourceBuffer = buffer;
   }
   wbInfo.driveSync = { status: 'synced', time: new Date().toISOString(), error: '' };
@@ -591,7 +594,7 @@ app.get('/api/user', (req, res) => {
 });
 
 app.use((req, res, next) => {
-  if (req.path === '/' || req.path.endsWith('.html')) {
+  if (req.path === '/' || req.path.endsWith('.html') || req.path.startsWith('/api/drive/')) {
     res.set('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
     res.set('Pragma', 'no-cache');
     res.set('Expires', '0');
@@ -936,6 +939,7 @@ app.post('/api/drive/upload', express.raw({ type: '*/*', limit: '80mb' }), async
       state,
       _driveFileId: uploaded.id,
       _driveMimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      _driveModifiedTime: uploaded.modifiedTime || now,
       _sourceBuffer: Buffer.from(req.body),
       _user: req.user,
       driveSync: { status: 'synced', time: now, error: '' },
@@ -956,7 +960,7 @@ app.post('/api/drive/upload', express.raw({ type: '*/*', limit: '80mb' }), async
 });
 
 // 从 Google Drive 打开文件并加载到内存
-app.post('/api/drive/open/:fileId', (req, res) => {
+app.post('/api/drive/open/:fileId', async (req, res) => {
   if (!req.isAuthenticated()) {
     return res.status(401).json({ ok: false, error: 'login_required' });
   }
@@ -964,45 +968,39 @@ app.post('/api/drive/open/:fileId', (req, res) => {
     const drive = driveService.getDriveService(req.user);
     const workbookId = 'drive:' + req.params.fileId;
     const existing = workbooks.get(workbookId);
-    if (existing) {
+    const fileInfo = await driveService.getFileInfo(drive, req.params.fileId);
+
+    if (existing && existing._driveModifiedTime === fileInfo.modifiedTime) {
       if (!existing._user) existing._user = req.user;
       return res.json({ ok: true, workbook: workbookSummary(existing), state: existing.state });
     }
-    driveService.getFileInfo(drive, req.params.fileId)
-      .then(fileInfo => driveService.downloadFile(drive, req.params.fileId).then(buffer => ({ fileInfo, buffer })))
-      .then(({ fileInfo, buffer }) => {
-        if (fileInfo.mimeType !== 'application/vnd.google-apps.spreadsheet' && !driveItemSummary(fileInfo).isSpreadsheet) {
-          throw new Error('not_spreadsheet');
-        }
-        return { fileInfo, buffer };
-      })
-      .then(buffer => {
-        const fileInfo = buffer.fileInfo;
-        const sourceBuffer = buffer.buffer;
-        const state = parseWorkbookBuffer(sourceBuffer);
-        if (!state.sheetNames.length) throw new Error('no usable sheets');
-        const id = workbookId;
-        workbooks.set(id, {
-          id,
-          name: fileInfo.name || decodeURIComponent(req.query.name || 'GoogleDrive文件'),
-          folder: '',
-          filePath: null,
-          uploadedAt: fileInfo.modifiedTime || new Date().toISOString(),
-          updatedAt: new Date().toISOString(),
-          state,
-          _driveFileId: req.params.fileId,
-          _driveMimeType: fileInfo.mimeType,
-          _sourceBuffer: fileInfo.mimeType === 'application/vnd.google-apps.spreadsheet' ? null : sourceBuffer,
-          _user: req.user,
-          driveSync: { status: 'synced', time: new Date().toISOString(), error: '' },
-        });
-        res.json({ ok: true, workbook: workbookSummary(workbooks.get(id)), state });
-      })
-      .catch(err => {
-        console.error('Drive open error:', err);
-        res.status(500).json({ ok: false, error: err.message });
-      });
+
+    if (fileInfo.mimeType !== 'application/vnd.google-apps.spreadsheet' && !driveItemSummary(fileInfo).isSpreadsheet) {
+      throw new Error('not_spreadsheet');
+    }
+
+    const sourceBuffer = await driveService.downloadFile(drive, req.params.fileId);
+    const state = parseWorkbookBuffer(sourceBuffer);
+    if (!state.sheetNames.length) throw new Error('no usable sheets');
+
+    workbooks.set(workbookId, {
+      id: workbookId,
+      name: fileInfo.name || decodeURIComponent(req.query.name || 'GoogleDrive文件'),
+      folder: '',
+      filePath: null,
+      uploadedAt: fileInfo.modifiedTime || new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      state,
+      _driveFileId: req.params.fileId,
+      _driveMimeType: fileInfo.mimeType,
+      _driveModifiedTime: fileInfo.modifiedTime,
+      _sourceBuffer: fileInfo.mimeType === 'application/vnd.google-apps.spreadsheet' ? null : sourceBuffer,
+      _user: req.user,
+      driveSync: { status: 'synced', time: new Date().toISOString(), error: '' },
+    });
+    res.json({ ok: true, workbook: workbookSummary(workbooks.get(workbookId)), state });
   } catch (e) {
+    console.error('Drive open error:', e);
     res.status(500).json({ ok: false, error: e.message });
   }
 });
