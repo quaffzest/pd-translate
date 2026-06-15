@@ -550,7 +550,7 @@ app.use((req, res, next) => {
   next();
 });
 
-app.get(['/latest', '/drive'], (req, res) => {
+app.get(['/latest', '/drive', '/workbench'], (req, res) => {
   res.set('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
   res.set('Pragma', 'no-cache');
   res.set('Expires', '0');
