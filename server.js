@@ -21,6 +21,7 @@ const workbooks = new Map();
 const clients = new Map();
 const saveTimers = new Map();
 const driveSyncTimers = new Map();
+const driveRefreshInFlight = new Set();
 let meta = {};
 
 function ensureSeedWorkbook() {
@@ -184,8 +185,81 @@ async function syncWorkbookToDrive(wbInfo) {
     wbInfo._sourceBuffer = buffer;
   }
   wbInfo.driveSync = { status: 'synced', time: new Date().toISOString(), error: '' };
+  wbInfo._lastSyncedRevision = wbInfo._revision || 0;
   return wbInfo.driveSync;
 }
+
+function markWorkbookChanged(wbInfo) {
+  wbInfo._revision = (wbInfo._revision || 0) + 1;
+  wbInfo.updatedAt = new Date().toISOString();
+}
+
+function hasActiveClients(workbookId) {
+  for (const client of clients.values()) {
+    if (client.workbookId === workbookId) return true;
+  }
+  return false;
+}
+
+async function refreshWorkbookFromDrive(wbInfo) {
+  if (!wbInfo || !wbInfo._driveFileId || !wbInfo._user) return false;
+  if (wbInfo.driveSync && wbInfo.driveSync.status === 'syncing') return false;
+  if (driveRefreshInFlight.has(wbInfo.id)) return false;
+
+  driveRefreshInFlight.add(wbInfo.id);
+  try {
+    const drive = driveService.getDriveService(wbInfo._user);
+    const fileInfo = await driveService.getFileInfo(drive, wbInfo._driveFileId);
+    if (!fileInfo.modifiedTime || fileInfo.modifiedTime === wbInfo._driveModifiedTime) return false;
+
+    const localRevision = wbInfo._revision || 0;
+    const syncedRevision = wbInfo._lastSyncedRevision || 0;
+    if (localRevision !== syncedRevision) {
+      wbInfo.driveSync = {
+        status: 'conflict',
+        time: new Date().toISOString(),
+        error: 'Drive 文件已在外部更新，但工作台也有未同步修改。请先保存或重新打开文件。',
+      };
+      broadcast({ type: 'driveSync', workbookId: wbInfo.id, sync: wbInfo.driveSync }, null, wbInfo.id);
+      return false;
+    }
+
+    if (fileInfo.mimeType !== 'application/vnd.google-apps.spreadsheet' && !driveItemSummary(fileInfo).isSpreadsheet) {
+      return false;
+    }
+
+    const sourceBuffer = await driveService.downloadFile(drive, wbInfo._driveFileId);
+    const state = parseWorkbookBuffer(sourceBuffer);
+    if (!state.sheetNames.length) return false;
+
+    wbInfo.name = fileInfo.name || wbInfo.name;
+    wbInfo.state = state;
+    wbInfo._driveMimeType = fileInfo.mimeType;
+    wbInfo._driveModifiedTime = fileInfo.modifiedTime;
+    wbInfo._sourceBuffer = fileInfo.mimeType === 'application/vnd.google-apps.spreadsheet' ? null : sourceBuffer;
+    wbInfo.updatedAt = new Date().toISOString();
+    wbInfo.uploadedAt = fileInfo.modifiedTime || wbInfo.uploadedAt;
+    wbInfo.driveSync = { status: 'remote_updated', time: new Date().toISOString(), error: '' };
+    wbInfo._revision = localRevision;
+    wbInfo._lastSyncedRevision = localRevision;
+    broadcast({ type: 'init', workbook: workbookSummary(wbInfo), state: wbInfo.state }, null, wbInfo.id);
+    broadcast({ type: 'driveSync', workbookId: wbInfo.id, sync: wbInfo.driveSync }, null, wbInfo.id);
+    return true;
+  } catch (err) {
+    console.error('Drive refresh failed:', err.message);
+    return false;
+  } finally {
+    driveRefreshInFlight.delete(wbInfo.id);
+  }
+}
+
+setInterval(() => {
+  for (const wbInfo of workbooks.values()) {
+    if (wbInfo._driveFileId && hasActiveClients(wbInfo.id)) {
+      refreshWorkbookFromDrive(wbInfo);
+    }
+  }
+}, 10000);
 
 function writeWorkbook(wbInfo) {
   const buffer = workbookToBuffer(wbInfo);
@@ -206,6 +280,20 @@ function writeWorkbook(wbInfo) {
   }
   
   wbInfo.updatedAt = new Date().toISOString();
+}
+
+async function forceSaveWorkbook(wbInfo) {
+  clearTimeout(saveTimers.get(wbInfo.id));
+  clearTimeout(driveSyncTimers.get(wbInfo.id));
+  const buffer = workbookToBuffer(wbInfo);
+  if (wbInfo.filePath) {
+    fs.writeFileSync(wbInfo.filePath, buffer);
+  }
+  if (wbInfo._driveFileId && wbInfo._user) {
+    await syncWorkbookToDrive(wbInfo);
+  }
+  wbInfo.updatedAt = new Date().toISOString();
+  return wbInfo.driveSync || null;
 }
 
 function scheduleSave(id) {
@@ -242,6 +330,7 @@ function applyCellEdit(wbInfo, msg) {
   if (msg.field === 'seq') row.seq = String(msg.value || '');
   else if (msg.field === 'kr') row.kr = String(msg.value || '');
   else row.content[msg.col] = String(msg.value || '');
+  markWorkbookChanged(wbInfo);
   return true;
 }
 
@@ -271,6 +360,7 @@ function applyStyle(wbInfo, msg) {
   });
   meta[wbInfo.id] = { ...(meta[wbInfo.id] || {}), name: wbInfo.name, uploadedAt: wbInfo.uploadedAt, styles: extractStyles(wbInfo.state) };
   scheduleMetaSave();
+  markWorkbookChanged(wbInfo);
   return true;
 }
 
@@ -302,6 +392,7 @@ function applyRowOp(wbInfo, msg) {
     info.rows.splice(idx + 1, 0, { seq: '', kr: '', content: Array(contentLen).fill(''), styles: { seq: {}, kr: {}, content: Array.from({ length: contentLen }, () => ({})) }, merge: false });
     meta[wbInfo.id] = { ...(meta[wbInfo.id] || {}), name: wbInfo.name, uploadedAt: wbInfo.uploadedAt, styles: extractStyles(wbInfo.state) };
     scheduleMetaSave();
+    markWorkbookChanged(wbInfo);
     return true;
   }
   if (msg.action === 'duplicate' && info.rows[idx]) {
@@ -309,6 +400,7 @@ function applyRowOp(wbInfo, msg) {
     info.rows.splice(idx + 1, 0, { seq: row.seq, kr: row.kr, content: row.content.slice(), styles: JSON.parse(JSON.stringify(row.styles || {})), merge: false });
     meta[wbInfo.id] = { ...(meta[wbInfo.id] || {}), name: wbInfo.name, uploadedAt: wbInfo.uploadedAt, styles: extractStyles(wbInfo.state) };
     scheduleMetaSave();
+    markWorkbookChanged(wbInfo);
     return true;
   }
   if (msg.action === 'delete' && info.rows[idx]) {
@@ -316,6 +408,7 @@ function applyRowOp(wbInfo, msg) {
     if (info.rows[idx] && info.rows[idx].merge) info.rows[idx].merge = false;
     meta[wbInfo.id] = { ...(meta[wbInfo.id] || {}), name: wbInfo.name, uploadedAt: wbInfo.uploadedAt, styles: extractStyles(wbInfo.state) };
     scheduleMetaSave();
+    markWorkbookChanged(wbInfo);
     return true;
   }
   return false;
@@ -495,7 +588,10 @@ wss.on('connection', ws => {
         broadcast(msg, ws, wbInfo.id);
       } else if (msg.type === 'merge') {
         const info = wbInfo.state.sheets[msg.sheet];
-        if (info && info.rows[msg.row]) info.rows[msg.row].merge = !!msg.value;
+        if (info && info.rows[msg.row]) {
+          info.rows[msg.row].merge = !!msg.value;
+          markWorkbookChanged(wbInfo);
+        }
         scheduleSave(wbInfo.id);
         scheduleDriveSync(wbInfo.id);
         broadcast(msg, ws, wbInfo.id);
@@ -514,9 +610,17 @@ wss.on('connection', ws => {
         wbInfo.state.currentSheet = msg.sheet;
         broadcast(msg, ws, wbInfo.id);
       } else if (msg.type === 'save') {
-        writeWorkbook(wbInfo);
-        ws.send(JSON.stringify({ type: 'saved', time: new Date().toLocaleTimeString() }));
-        broadcastList();
+        forceSaveWorkbook(wbInfo)
+          .then(sync => {
+            ws.send(JSON.stringify({ type: 'saved', time: new Date().toLocaleTimeString() }));
+            if (sync) broadcast({ type: 'driveSync', workbookId: wbInfo.id, sync }, null, wbInfo.id);
+            broadcastList();
+          })
+          .catch(err => {
+            wbInfo.driveSync = { status: 'failed', time: new Date().toISOString(), error: err.message };
+            ws.send(JSON.stringify({ type: 'driveSync', workbookId: wbInfo.id, sync: wbInfo.driveSync }));
+            console.error('Save failed:', err.message);
+          });
       }
     } catch (e) {
       console.error('Msg err:', e);
@@ -781,6 +885,7 @@ app.post('/api/merge/:id', express.json(), (req, res) => {
   const info = wbInfo && wbInfo.state.sheets[msg.sheet];
   if (!info || !info.rows[msg.row]) return res.status(404).json({ ok: false, error: 'row_not_found' });
   info.rows[msg.row].merge = !!msg.value;
+  markWorkbookChanged(wbInfo);
   scheduleSave(wbInfo.id);
   scheduleDriveSync(wbInfo.id);
   broadcast({ type: 'merge', workbookId: wbInfo.id, sheet: msg.sheet, row: msg.row, value: !!msg.value }, null, wbInfo.id);
@@ -803,12 +908,19 @@ app.post('/api/style/:id', express.json(), (req, res) => {
   broadcast({ type: 'style', workbookId: wbInfo.id, sheet: msg.sheet, row: msg.row, col: msg.col, field: msg.field, style: msg.style || {} }, null, wbInfo.id);
   res.json({ ok: true });
 });
-app.post('/api/save/:id', express.json(), (req, res) => {
+app.post('/api/save/:id', express.json(), async (req, res) => {
   const wbInfo = workbooks.get(req.params.id);
   if (!wbInfo) return res.status(404).json({ ok: false, error: 'workbook_not_found' });
-  writeWorkbook(wbInfo);
-  broadcastList();
-  res.json({ ok: true, time: new Date().toLocaleTimeString() });
+  try {
+    const sync = await forceSaveWorkbook(wbInfo);
+    if (sync) broadcast({ type: 'driveSync', workbookId: wbInfo.id, sync }, null, wbInfo.id);
+    broadcastList();
+    res.json({ ok: true, time: new Date().toLocaleTimeString(), driveSync: sync });
+  } catch (e) {
+    wbInfo.driveSync = { status: 'failed', time: new Date().toISOString(), error: e.message };
+    broadcast({ type: 'driveSync', workbookId: wbInfo.id, sync: wbInfo.driveSync }, null, wbInfo.id);
+    res.status(500).json({ ok: false, error: e.message, driveSync: wbInfo.driveSync });
+  }
 });
 
 // ---- Google Drive API Routes ----
