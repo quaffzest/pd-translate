@@ -359,18 +359,22 @@ function broadcastList() {
 }
 
 const app = express();
-app.set('trust proxy', 1); // 信任 Cloudflare/Render 代理，确保 secure cookie 生效
+app.set('trust proxy', true); // Trust Cloudflare/Render proxy headers so secure cookies work.
 const server = http.createServer(app);
 const wss = new WebSocketServer({ server, path: '/ws' });
 
 // ---- Session & Authentication ----
 
 app.use(session({
+  name: 'pd.sid',
   secret: process.env.SESSION_SECRET || 'dev-secret-change-me-in-production',
   resave: false,
   saveUninitialized: false,
+  proxy: true,
   cookie: {
     secure: process.env.NODE_ENV === 'production',
+    httpOnly: true,
+    sameSite: 'lax',
     maxAge: 24 * 60 * 60 * 1000, // 24 hours
   },
 }));
@@ -484,14 +488,30 @@ app.get('/auth/google', (req, res, next) => {
 });
 
 // Google 回调
-app.get('/auth/google/callback',
-  passport.authenticate('google', { failureRedirect: '/' }),
-  (req, res) => { res.redirect('/'); }
-);
+app.get('/auth/google/callback', (req, res, next) => {
+  passport.authenticate('google', (err, user) => {
+    if (err) return next(err);
+    if (!user) return res.redirect('/');
+
+    req.logIn(user, loginErr => {
+      if (loginErr) return next(loginErr);
+
+      req.session.save(saveErr => {
+        if (saveErr) return next(saveErr);
+        res.redirect('/');
+      });
+    });
+  })(req, res, next);
+});
 
 // 登出
 app.get('/auth/logout', (req, res) => {
-  req.logout(() => { res.redirect('/'); });
+  req.logout(() => {
+    req.session.destroy(() => {
+      res.clearCookie('pd.sid');
+      res.redirect('/');
+    });
+  });
 });
 
 // 获取当前用户信息
