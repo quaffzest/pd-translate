@@ -114,6 +114,7 @@ function parseWorkbook(wb) {
         seq: String(r[si] || '').trim(),
         kr: String(r[ki] || '').trim(),
         content,
+        styles: { seq: {}, kr: {}, content: headers.map(() => ({})) },
         merge: mergeValue === 'Y' || mergeValue === 'TRUE' || mergeValue === '1',
       };
     });
@@ -161,6 +162,11 @@ function scheduleSave(id) {
   }, 3000));
 }
 
+function scheduleMetaSave() {
+  clearTimeout(scheduleMetaSave.timer);
+  scheduleMetaSave.timer = setTimeout(writeMeta, 1000);
+}
+
 function applyCellEdit(wbInfo, msg) {
   const info = wbInfo.state.sheets[msg.sheet];
   if (!info || !info.rows[msg.row]) return false;
@@ -171,23 +177,77 @@ function applyCellEdit(wbInfo, msg) {
   return true;
 }
 
+function ensureRowStyles(row, headerCount) {
+  if (!row.styles) row.styles = {};
+  if (!row.styles.seq) row.styles.seq = {};
+  if (!row.styles.kr) row.styles.kr = {};
+  if (!Array.isArray(row.styles.content)) row.styles.content = Array.from({ length: headerCount }, () => ({}));
+  while (row.styles.content.length < headerCount) row.styles.content.push({});
+  return row.styles;
+}
+
+function getCellStyle(row, headers, msg) {
+  const styles = ensureRowStyles(row, headers.length);
+  if (msg.field === 'seq') return styles.seq;
+  if (msg.field === 'kr') return styles.kr;
+  return styles.content[msg.col] || (styles.content[msg.col] = {});
+}
+
+function applyStyle(wbInfo, msg) {
+  const info = wbInfo.state.sheets[msg.sheet];
+  if (!info || !info.rows[msg.row]) return false;
+  const style = getCellStyle(info.rows[msg.row], info.headers, msg);
+  Object.assign(style, msg.style || {});
+  Object.keys(style).forEach(key => {
+    if (style[key] === '' || style[key] === null || style[key] === false) delete style[key];
+  });
+  meta[wbInfo.id] = { ...(meta[wbInfo.id] || {}), name: wbInfo.name, uploadedAt: wbInfo.uploadedAt, styles: extractStyles(wbInfo.state) };
+  scheduleMetaSave();
+  return true;
+}
+
+function extractStyles(state) {
+  const out = {};
+  for (const sn of state.sheetNames) {
+    out[sn] = state.sheets[sn].rows.map(row => row.styles || {});
+  }
+  return out;
+}
+
+function applySavedStyles(state, styles) {
+  if (!styles) return;
+  for (const sn of state.sheetNames) {
+    const sheetStyles = styles[sn] || [];
+    state.sheets[sn].rows.forEach((row, i) => {
+      if (sheetStyles[i]) row.styles = sheetStyles[i];
+      ensureRowStyles(row, state.sheets[sn].headers.length);
+    });
+  }
+}
+
 function applyRowOp(wbInfo, msg) {
   const info = wbInfo.state.sheets[msg.sheet];
   if (!info) return false;
   const idx = Math.max(0, Math.min(Number(msg.row) || 0, info.rows.length));
   if (msg.action === 'insert') {
     const contentLen = info.headers.length;
-    info.rows.splice(idx + 1, 0, { seq: '', kr: '', content: Array(contentLen).fill(''), merge: false });
+    info.rows.splice(idx + 1, 0, { seq: '', kr: '', content: Array(contentLen).fill(''), styles: { seq: {}, kr: {}, content: Array.from({ length: contentLen }, () => ({})) }, merge: false });
+    meta[wbInfo.id] = { ...(meta[wbInfo.id] || {}), name: wbInfo.name, uploadedAt: wbInfo.uploadedAt, styles: extractStyles(wbInfo.state) };
+    scheduleMetaSave();
     return true;
   }
   if (msg.action === 'duplicate' && info.rows[idx]) {
     const row = info.rows[idx];
-    info.rows.splice(idx + 1, 0, { seq: row.seq, kr: row.kr, content: row.content.slice(), merge: false });
+    info.rows.splice(idx + 1, 0, { seq: row.seq, kr: row.kr, content: row.content.slice(), styles: JSON.parse(JSON.stringify(row.styles || {})), merge: false });
+    meta[wbInfo.id] = { ...(meta[wbInfo.id] || {}), name: wbInfo.name, uploadedAt: wbInfo.uploadedAt, styles: extractStyles(wbInfo.state) };
+    scheduleMetaSave();
     return true;
   }
   if (msg.action === 'delete' && info.rows[idx]) {
     info.rows.splice(idx, 1);
     if (info.rows[idx] && info.rows[idx].merge) info.rows[idx].merge = false;
+    meta[wbInfo.id] = { ...(meta[wbInfo.id] || {}), name: wbInfo.name, uploadedAt: wbInfo.uploadedAt, styles: extractStyles(wbInfo.state) };
+    scheduleMetaSave();
     return true;
   }
   return false;
@@ -203,6 +263,7 @@ function loadAllWorkbooks() {
     const id = file.replace(/\.[^.]+$/, '');
     const saved = meta[id] || {};
     const state = parseWorkbookFile(filePath);
+    applySavedStyles(state, saved.styles);
     workbooks.set(id, {
       id,
       name: saved.name || (file === 'default.xlsx' ? '第01话_协作主表.xlsx' : file),
@@ -311,6 +372,10 @@ wss.on('connection', ws => {
       } else if (msg.type === 'row') {
         if (applyRowOp(wbInfo, msg)) {
           scheduleSave(wbInfo.id);
+          broadcast(msg, ws, wbInfo.id);
+        }
+      } else if (msg.type === 'style') {
+        if (applyStyle(wbInfo, msg)) {
           broadcast(msg, ws, wbInfo.id);
         }
       } else if (msg.type === 'switchSheet') {
@@ -498,6 +563,13 @@ app.post('/api/row/:id', express.json(), (req, res) => {
   if (!wbInfo || !applyRowOp(wbInfo, msg)) return res.status(400).json({ ok: false, error: 'row_op_failed' });
   scheduleSave(wbInfo.id);
   broadcast({ type: 'row', workbookId: wbInfo.id, sheet: msg.sheet, row: msg.row, action: msg.action }, null, wbInfo.id);
+  res.json({ ok: true });
+});
+app.post('/api/style/:id', express.json(), (req, res) => {
+  const wbInfo = workbooks.get(req.params.id);
+  const msg = req.body || {};
+  if (!wbInfo || !applyStyle(wbInfo, msg)) return res.status(400).json({ ok: false, error: 'style_failed' });
+  broadcast({ type: 'style', workbookId: wbInfo.id, sheet: msg.sheet, row: msg.row, col: msg.col, field: msg.field, style: msg.style || {} }, null, wbInfo.id);
   res.json({ ok: true });
 });
 app.post('/api/save/:id', express.json(), (req, res) => {
