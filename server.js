@@ -358,6 +358,13 @@ function broadcastList() {
   broadcast(msg);
 }
 
+function safeReturnTo(value, fallback = '/latest') {
+  const target = String(value || '').trim();
+  if (!target.startsWith('/') || target.startsWith('//')) return fallback;
+  if (target.startsWith('/auth/')) return fallback;
+  return target;
+}
+
 const app = express();
 app.set('trust proxy', true); // Trust Cloudflare/Render proxy headers so secure cookies work.
 const server = http.createServer(app);
@@ -476,6 +483,7 @@ wss.on('connection', ws => {
 // 发起 Google 登录
 app.get('/auth/google', (req, res, next) => {
   if (!googleConfig.clientID) return res.status(503).send('Google OAuth not configured');
+  req.session.returnTo = safeReturnTo(req.query.returnTo, '/latest');
   passport.authenticate('google', {
     scope: [
       'profile',
@@ -498,7 +506,9 @@ app.get('/auth/google/callback', (req, res, next) => {
 
       req.session.save(saveErr => {
         if (saveErr) return next(saveErr);
-        res.redirect('/latest');
+        const returnTo = safeReturnTo(req.session.returnTo, '/latest');
+        delete req.session.returnTo;
+        res.redirect(returnTo);
       });
     });
   })(req, res, next);
@@ -506,10 +516,11 @@ app.get('/auth/google/callback', (req, res, next) => {
 
 // 登出
 app.get('/auth/logout', (req, res) => {
+  const returnTo = safeReturnTo(req.query.returnTo, '/latest');
   req.logout(() => {
     req.session.destroy(() => {
       res.clearCookie('pd.sid');
-      res.redirect('/latest');
+      res.redirect(returnTo);
     });
   });
 });
