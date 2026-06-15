@@ -45,23 +45,33 @@ async function findOrCreateRootFolder(drive) {
 }
 
 /**
- * 列出指定文件夹下的所有文件（包括 own + shared 的文件）
- * 同时也会搜索「别人共享给我的」XLSX 文件
+ * 列出用户 Drive 中可用的 XLSX 文件。
+ * 包含整个 My Drive、pd-translate 文件夹，以及别人共享给我的文件。
  */
 async function listDriveFiles(drive, folderId) {
-  // 1. 列出自己的 pd-translate 文件夹中的文件
-  const mine = await drive.files.list({
-    q: `'${folderId}' in parents and trashed=false`,
-    fields: 'files(id, name, mimeType, modifiedTime, createdTime, size, owners)',
+  const xlsxQuery = `(mimeType='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' or name contains '.xlsx' or name contains '.xls') and trashed=false`;
+
+  // 1. 搜索整个 Drive 中的 XLSX 文件
+  const allSheets = await drive.files.list({
+    q: xlsxQuery,
+    fields: 'files(id, name, mimeType, modifiedTime, createdTime, size, owners, shared)',
     orderBy: 'modifiedTime desc',
     pageSize: 100,
   });
 
-  // 2. 搜索共享给我的 XLSX 文件
+  // 2. 列出自己的 pd-translate 文件夹中的文件，包含文件夹本身用于展示
+  const appFolderFiles = await drive.files.list({
+    q: `'${folderId}' in parents and trashed=false`,
+    fields: 'files(id, name, mimeType, modifiedTime, createdTime, size, owners, shared)',
+    orderBy: 'modifiedTime desc',
+    pageSize: 100,
+  });
+
+  // 3. 搜索共享给我的 XLSX 文件
   let sharedFiles = [];
   try {
     const shared = await drive.files.list({
-      q: `sharedWithMe=true and (mimeType='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' or name contains '.xlsx') and trashed=false`,
+      q: `sharedWithMe=true and ${xlsxQuery}`,
       fields: 'files(id, name, mimeType, modifiedTime, createdTime, size, owners, shared)',
       orderBy: 'modifiedTime desc',
       pageSize: 100,
@@ -73,10 +83,13 @@ async function listDriveFiles(drive, folderId) {
   }
 
   // 去重（同 ID 不要出现两次）
-  const seen = new Set(mine.data.files.map(f => f.id));
-  const uniqueShared = sharedFiles.filter(f => !seen.has(f.id));
-
-  return [...mine.data.files, ...uniqueShared];
+  const seen = new Set();
+  return [...(allSheets.data.files || []), ...(appFolderFiles.data.files || []), ...sharedFiles]
+    .filter(file => {
+      if (seen.has(file.id)) return false;
+      seen.add(file.id);
+      return true;
+    });
 }
 
 /**

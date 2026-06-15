@@ -488,7 +488,7 @@ app.get('/auth/google', (req, res, next) => {
     scope: [
       'profile',
       'email',
-      'https://www.googleapis.com/auth/drive.file',
+      'https://www.googleapis.com/auth/drive',
     ],
     accessType: 'offline',
     prompt: 'consent',
