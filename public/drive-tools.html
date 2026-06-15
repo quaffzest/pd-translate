@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Google Drive 工具 - 翻译工作台</title>
+<style>
+body{margin:0;background:#f4f6f8;color:#172033;font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft YaHei",sans-serif}
+.top{display:flex;align-items:center;gap:10px;padding:12px 16px;background:#fff;border-bottom:1px solid #d8dde5}
+.logo{font-weight:800;color:#315efb}.spacer{flex:1}.btn{border:0;border-radius:6px;background:#315efb;color:#fff;padding:9px 13px;cursor:pointer;text-decoration:none;display:inline-block}.btn:hover{background:#244bd6}.btn.sec{background:#eef0f4;color:#253044}.btn.sec:hover{background:#dde2ea}.btn:disabled{opacity:.55;cursor:not-allowed}
+.wrap{padding:22px;max-width:900px}.panel{background:#fff;border:1px solid #d8dde5;border-radius:8px;padding:18px;margin-bottom:16px}.actions{display:flex;gap:10px;flex-wrap:wrap}.muted{color:#667085;font-size:13px}.list{margin-top:14px;border:1px solid #e7eaf0;border-radius:8px;overflow:hidden}.item{display:flex;align-items:center;gap:10px;padding:11px 13px;border-bottom:1px solid #e7eaf0;cursor:pointer}.item:last-child{border-bottom:0}.item:hover{background:#eef4ff}.small{margin-left:auto;color:#667085;font-size:12px}.status{font-weight:700}.ok{color:#16803c}.bad{color:#d92d20}
+</style>
+</head>
+<body>
+<div class="top">
+  <div class="logo">翻译协作工作台 · Google Drive 工具</div>
+  <a class="btn sec" href="/latest">返回工作台</a>
+  <div class="spacer"></div>
+  <span id="user" class="muted">检查登录中...</span>
+  <a id="login" class="btn" href="/auth/google">登录 Google</a>
+  <a id="logout" class="btn sec" href="/auth/logout" style="display:none">登出</a>
+</div>
+
+<main class="wrap">
+  <section class="panel">
+    <h2>上传表格到 Google Drive</h2>
+    <p class="muted">上传后会保存到你 Drive 里的 pd-translate 文件夹，并自动在工作台中打开。</p>
+    <div class="actions">
+      <button id="uploadBtn" class="btn">上传 .xlsx 到 Google Drive</button>
+      <input id="uploadInput" type="file" accept=".xlsx,.xls" hidden>
+    </div>
+    <p id="uploadStatus" class="muted"></p>
+  </section>
+
+  <section class="panel">
+    <h2>从 Google Drive 打开</h2>
+    <div class="actions">
+      <button id="refreshBtn" class="btn sec">刷新 Drive 文件列表</button>
+    </div>
+    <div id="fileList" class="list"><div class="item muted">等待加载...</div></div>
+  </section>
+</main>
+
+<script>
+(function(){
+  function $(id){return document.getElementById(id)}
+  function esc(v){return String(v==null?"":v).replace(/[&<>]/g,function(c){return {"&":"&amp;","<":"&lt;",">":"&gt;"}[c]})}
+  function fmtTime(s){if(!s)return "";var d=new Date(s);return isNaN(d)?"":d.toLocaleString()}
+  function setStatus(id,text,ok){$(id).innerHTML='<span class="'+(ok?"ok":"bad")+'">'+esc(text)+'</span>'}
+
+  function checkAuth(){
+    fetch("/api/user").then(function(r){return r.json()}).then(function(data){
+      if(data.loggedIn){
+        $("user").textContent=(data.user.displayName||data.user.email||"已登录");
+        $("login").style.display="none";
+        $("logout").style.display="inline-block";
+        loadFiles();
+      }else{
+        $("user").innerHTML='<span class="bad">未登录</span>';
+        $("login").style.display="inline-block";
+        $("logout").style.display="none";
+        $("fileList").innerHTML='<div class="item muted">请先登录 Google。</div>';
+      }
+    }).catch(function(){
+      $("user").innerHTML='<span class="bad">登录状态检查失败</span>';
+    });
+  }
+
+  function uploadFile(file){
+    if(!file)return;
+    if(!/\.xlsx?$/i.test(file.name)){setStatus("uploadStatus","请选择 xlsx/xls 表格文件",false);return}
+    $("uploadBtn").disabled=true;
+    $("uploadBtn").textContent="上传中...";
+    $("uploadStatus").textContent="";
+    fetch("/api/drive/upload",{method:"POST",headers:{"Content-Type":"application/octet-stream","X-File-Name":encodeURIComponent(file.name)},body:file})
+      .then(function(r){return r.json().then(function(data){if(!r.ok||!data.ok)throw new Error(data.error||r.status);return data})})
+      .then(function(data){
+        setStatus("uploadStatus","已上传到 Google Drive，正在打开工作台...",true);
+        location.href="/latest#drive="+encodeURIComponent(data.workbook.id);
+      })
+      .catch(function(e){setStatus("uploadStatus","上传失败: "+(e.message||"请检查登录状态"),false)})
+      .finally(function(){$("uploadBtn").disabled=false;$("uploadBtn").textContent="上传 .xlsx 到 Google Drive";$("uploadInput").value=""});
+  }
+
+  function loadFiles(){
+    $("fileList").innerHTML='<div class="item muted">加载中...</div>';
+    fetch("/api/drive/files").then(function(r){return r.json()}).then(function(data){
+      if(!data.ok){$("fileList").innerHTML='<div class="item bad">加载失败: '+esc(data.error||"")+'</div>';return}
+      var files=data.files||[];
+      if(!files.length){$("fileList").innerHTML='<div class="item muted">Google Drive 中没有 XLSX 文件。</div>';return}
+      $("fileList").innerHTML=files.map(function(f){
+        var icon=f.isFolder?"📁":"📄";
+        return '<div class="item" data-id="'+esc(f.id)+'" data-name="'+esc(f.name)+'" data-folder="'+!!f.isFolder+'"><span>'+icon+'</span><strong>'+esc(f.name)+'</strong><span class="small">'+esc(fmtTime(f.modifiedTime))+'</span></div>';
+      }).join("");
+    }).catch(function(){
+      $("fileList").innerHTML='<div class="item bad">加载失败，请检查网络。</div>';
+    });
+  }
+
+  $("uploadBtn").onclick=function(){$("uploadInput").click()};
+  $("uploadInput").onchange=function(){uploadFile(this.files[0])};
+  $("refreshBtn").onclick=loadFiles;
+  $("fileList").addEventListener("dblclick",function(e){
+    var item=e.target.closest(".item");
+    if(!item||!item.dataset.id)return;
+    if(item.dataset.folder==="true"){alert("文件夹暂不支持直接打开");return}
+    fetch("/api/drive/open/"+encodeURIComponent(item.dataset.id)+"?name="+encodeURIComponent(item.dataset.name),{method:"POST"})
+      .then(function(r){return r.json().then(function(data){if(!r.ok||!data.ok)throw new Error(data.error||r.status);return data})})
+      .then(function(){location.href="/latest#drive="+encodeURIComponent(item.dataset.id)})
+      .catch(function(e){alert("打开失败: "+(e.message||"请检查登录状态"))});
+  });
+
+  checkAuth();
+})();
+</script>
+</body>
+</html>
