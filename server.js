@@ -67,7 +67,7 @@ function saveXlsx() {
 
 const app = express();
 const server = http.createServer(app);
-const wss = new WebSocketServer({ server });
+const wss = new WebSocketServer({ server, path: "/ws" });
 const clients = new Map();
 
 function broadcast(msg, sender) {
@@ -121,7 +121,10 @@ wss.on('connection', (ws) => {
 });
 
 app.use(express.static(path.join(__dirname, 'public')));
-app.get('/api/status', (req, res) => { res.json({ clients: clients.size }); });
+app.get('/api/status', (req, res) => { res.json({ clients: clients.size, wsPath: '/ws' }); });
+app.post('/api/data', express.json(), (req, res) => {
+  res.json({ state: { sheets: sheetsData, sheetNames: sheetNames, currentSheet: currentSheet } });
+});
 
 loadXlsx();
 server.listen(PORT, () => console.log('Server: http://localhost:' + PORT));
