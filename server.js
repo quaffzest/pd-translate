@@ -376,21 +376,27 @@ app.use(session({
 app.use(passport.initialize());
 app.use(passport.session());
 
-passport.use(new GoogleStrategy({
-  clientID: googleConfig.clientID,
-  clientSecret: googleConfig.clientSecret,
-  callbackURL: googleConfig.callbackURL,
-}, (accessToken, refreshToken, profile, done) => {
-  const user = {
-    id: profile.id,
-    displayName: profile.displayName,
-    email: profile.emails[0].value,
-    avatar: profile.photos[0].value,
-    accessToken,
-    refreshToken,
-  };
-  return done(null, user);
-}));
+// 只在 Google OAuth 环境变量配置好时才初始化
+if (googleConfig.clientID && googleConfig.clientSecret) {
+  passport.use(new GoogleStrategy({
+    clientID: googleConfig.clientID,
+    clientSecret: googleConfig.clientSecret,
+    callbackURL: googleConfig.callbackURL,
+  }, (accessToken, refreshToken, profile, done) => {
+    const user = {
+      id: profile.id,
+      displayName: profile.displayName,
+      email: profile.emails[0].value,
+      avatar: profile.photos[0].value,
+      accessToken,
+      refreshToken,
+    };
+    return done(null, user);
+  }));
+  console.log('Google OAuth enabled');
+} else {
+  console.log('Google OAuth NOT configured — skipping (set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET)');
+}
 
 passport.serializeUser((user, done) => done(null, user));
 passport.deserializeUser((user, done) => done(null, user));
@@ -462,7 +468,8 @@ wss.on('connection', ws => {
 // ---- Auth Routes ----
 
 // 发起 Google 登录
-app.get('/auth/google',
+app.get('/auth/google', (req, res, next) => {
+  if (!googleConfig.clientID) return res.status(503).send('Google OAuth not configured');
   passport.authenticate('google', {
     scope: [
       'profile',
@@ -471,8 +478,8 @@ app.get('/auth/google',
     ],
     accessType: 'offline',
     prompt: 'consent',
-  })
-);
+  })(req, res, next);
+});
 
 // Google 回调
 app.get('/auth/google/callback',
