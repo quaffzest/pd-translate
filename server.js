@@ -171,6 +171,28 @@ function applyCellEdit(wbInfo, msg) {
   return true;
 }
 
+function applyRowOp(wbInfo, msg) {
+  const info = wbInfo.state.sheets[msg.sheet];
+  if (!info) return false;
+  const idx = Math.max(0, Math.min(Number(msg.row) || 0, info.rows.length));
+  if (msg.action === 'insert') {
+    const contentLen = info.headers.length;
+    info.rows.splice(idx + 1, 0, { seq: '', kr: '', content: Array(contentLen).fill(''), merge: false });
+    return true;
+  }
+  if (msg.action === 'duplicate' && info.rows[idx]) {
+    const row = info.rows[idx];
+    info.rows.splice(idx + 1, 0, { seq: row.seq, kr: row.kr, content: row.content.slice(), merge: false });
+    return true;
+  }
+  if (msg.action === 'delete' && info.rows[idx]) {
+    info.rows.splice(idx, 1);
+    if (info.rows[idx] && info.rows[idx].merge) info.rows[idx].merge = false;
+    return true;
+  }
+  return false;
+}
+
 function loadAllWorkbooks() {
   ensureSeedWorkbook();
   readMeta();
@@ -286,6 +308,11 @@ wss.on('connection', ws => {
         if (info && info.rows[msg.row]) info.rows[msg.row].merge = !!msg.value;
         scheduleSave(wbInfo.id);
         broadcast(msg, ws, wbInfo.id);
+      } else if (msg.type === 'row') {
+        if (applyRowOp(wbInfo, msg)) {
+          scheduleSave(wbInfo.id);
+          broadcast(msg, ws, wbInfo.id);
+        }
       } else if (msg.type === 'switchSheet') {
         wbInfo.state.currentSheet = msg.sheet;
         broadcast(msg, ws, wbInfo.id);
@@ -463,6 +490,14 @@ app.post('/api/merge/:id', express.json(), (req, res) => {
   info.rows[msg.row].merge = !!msg.value;
   scheduleSave(wbInfo.id);
   broadcast({ type: 'merge', workbookId: wbInfo.id, sheet: msg.sheet, row: msg.row, value: !!msg.value }, null, wbInfo.id);
+  res.json({ ok: true });
+});
+app.post('/api/row/:id', express.json(), (req, res) => {
+  const wbInfo = workbooks.get(req.params.id);
+  const msg = req.body || {};
+  if (!wbInfo || !applyRowOp(wbInfo, msg)) return res.status(400).json({ ok: false, error: 'row_op_failed' });
+  scheduleSave(wbInfo.id);
+  broadcast({ type: 'row', workbookId: wbInfo.id, sheet: msg.sheet, row: msg.row, action: msg.action }, null, wbInfo.id);
   res.json({ ok: true });
 });
 app.post('/api/save/:id', express.json(), (req, res) => {
