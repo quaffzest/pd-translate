@@ -20,6 +20,7 @@ const META_FILE = path.join(WORKBOOK_DIR, '_meta.json');
 const workbooks = new Map();
 const clients = new Map();
 const saveTimers = new Map();
+const driveSyncTimers = new Map();
 let meta = {};
 
 function ensureSeedWorkbook() {
@@ -126,7 +127,7 @@ function parseWorkbook(wb) {
     });
 
     if (sheetRows.length) {
-      sheets[sn] = { headers, rows: sheetRows };
+      sheets[sn] = { headers, rows: sheetRows, seqIdx: si, krIdx: ki, mergeIdx: mi };
       sheetNames.push(sn);
     }
   }
@@ -135,44 +136,65 @@ function parseWorkbook(wb) {
   return { sheets, sheetNames, currentSheet };
 }
 
-function writeWorkbook(wbInfo) {
-  const wb = XLSX.utils.book_new();
+function workbookToBuffer(wbInfo) {
+  const wb = wbInfo._sourceBuffer ? XLSX.read(wbInfo._sourceBuffer, { type: 'buffer' }) : XLSX.utils.book_new();
   for (const sn of wbInfo.state.sheetNames) {
     const info = wbInfo.state.sheets[sn];
-    const header = ['序', '韩文原文', ...info.headers.map(c => c.name), '终稿', '合并'];
-    const data = [header];
-    for (const row of info.rows) {
-      const values = [row.seq, row.kr];
-      for (let ci = 0; ci < info.headers.length; ci++) values.push(row.content[ci] || '');
-      let finalText = '';
-      for (let i = row.content.length - 1; i >= 0; i--) {
-        if (String(row.content[i] || '').trim()) {
-          finalText = String(row.content[i]).trim();
-          break;
-        }
-      }
-      values.push(finalText, row.merge ? 'Y' : '');
-      data.push(values);
+    let ws = wb.Sheets[sn];
+    if (!ws) {
+      const header = ['序', '韩文原文', ...info.headers.map(c => c.name), '终稿', '合并'];
+      ws = XLSX.utils.aoa_to_sheet([header]);
+      XLSX.utils.book_append_sheet(wb, ws, sn);
     }
-    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(data), sn);
+    const columns = [
+      { idx: info.seqIdx || 0, values: info.rows.map(row => row.seq || '') },
+      { idx: info.krIdx || 1, values: info.rows.map(row => row.kr || '') },
+      ...info.headers.map((header, contentIndex) => ({
+        idx: header.idx,
+        values: info.rows.map(row => (row.content || [])[contentIndex] || ''),
+      })),
+    ];
+    if (Number.isInteger(info.mergeIdx) && info.mergeIdx >= 0) {
+      columns.push({ idx: info.mergeIdx, values: info.rows.map(row => row.merge ? 'Y' : '') });
+    }
+    for (const col of columns) {
+      if (!Number.isInteger(col.idx) || col.idx < 0) continue;
+      const colName = XLSX.utils.encode_col(col.idx);
+      col.values.forEach((value, rowIndex) => {
+        XLSX.utils.sheet_add_aoa(ws, [[value]], { origin: `${colName}${rowIndex + 2}` });
+      });
+    }
   }
-  
-  const buffer = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
-  
-  // 如果是 Google Drive 文件，同步到 Drive
+  return XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
+}
+
+async function syncWorkbookToDrive(wbInfo) {
+  if (!wbInfo._driveFileId || !wbInfo._user) return null;
+  wbInfo.driveSync = { status: 'syncing', time: new Date().toISOString(), error: '' };
+  const drive = driveService.getDriveService(wbInfo._user);
+  if (wbInfo._driveMimeType === 'application/vnd.google-apps.spreadsheet') {
+    const sheets = driveService.getSheetsService(wbInfo._user);
+    await driveService.updateGoogleSheetValues(sheets, wbInfo._driveFileId, wbInfo.state);
+  } else {
+    const buffer = workbookToBuffer(wbInfo);
+    await driveService.updateFileContent(drive, wbInfo._driveFileId, buffer);
+    wbInfo._sourceBuffer = buffer;
+  }
+  wbInfo.driveSync = { status: 'synced', time: new Date().toISOString(), error: '' };
+  return wbInfo.driveSync;
+}
+
+function writeWorkbook(wbInfo) {
+  const buffer = workbookToBuffer(wbInfo);
+
   if (wbInfo._driveFileId && wbInfo._user) {
-    try {
-      const drive = driveService.getDriveService(wbInfo._user);
-      driveService.updateFileContent(drive, wbInfo._driveFileId, buffer)
-        .then(result => {
-          console.log('Synced to Drive:', wbInfo._driveFileId);
-        })
-        .catch(err => {
-          console.error('Drive sync failed:', err.message);
-        });
-    } catch (e) {
-      console.error('Drive sync error:', e.message);
-    }
+    syncWorkbookToDrive(wbInfo)
+      .then(() => broadcast({ type: 'driveSync', workbookId: wbInfo.id, sync: wbInfo.driveSync }, null, wbInfo.id))
+      .catch(err => {
+        wbInfo.driveSync = { status: 'failed', time: new Date().toISOString(), error: err.message };
+        console.error('Drive sync failed:', err.message);
+        broadcast({ type: 'driveSync', workbookId: wbInfo.id, sync: wbInfo.driveSync }, null, wbInfo.id);
+      });
   }
   
   // 本地文件保存（如果有 filePath）
@@ -189,6 +211,20 @@ function scheduleSave(id) {
     const wbInfo = workbooks.get(id);
     if (wbInfo) writeWorkbook(wbInfo);
   }, 3000));
+}
+
+function scheduleDriveSync(id) {
+  clearTimeout(driveSyncTimers.get(id));
+  driveSyncTimers.set(id, setTimeout(() => {
+    const wbInfo = workbooks.get(id);
+    if (!wbInfo || !wbInfo._driveFileId) return;
+    syncWorkbookToDrive(wbInfo)
+      .then(() => broadcast({ type: 'driveSync', workbookId: wbInfo.id, sync: wbInfo.driveSync }, null, wbInfo.id))
+      .catch(err => {
+        wbInfo.driveSync = { status: 'failed', time: new Date().toISOString(), error: err.message };
+        broadcast({ type: 'driveSync', workbookId: wbInfo.id, sync: wbInfo.driveSync }, null, wbInfo.id);
+      });
+  }, 8000));
 }
 
 function scheduleMetaSave() {
@@ -320,6 +356,9 @@ function workbookSummary(wbInfo) {
     translated,
     uploadedAt: wbInfo.uploadedAt,
     updatedAt: wbInfo.updatedAt,
+    source: wbInfo._driveFileId ? 'drive' : 'server',
+    driveFileId: wbInfo._driveFileId || '',
+    driveSync: wbInfo.driveSync || null,
   };
 }
 
@@ -338,7 +377,7 @@ function listItems(folder) {
       return { type: 'folder', name: entry.name, path: folderPath, updatedAt: stat.mtime.toISOString() };
     });
   const files = [...workbooks.values()]
-    .filter(wb => (wb.folder || '') === clean)
+    .filter(wb => !wb._driveFileId && (wb.folder || '') === clean)
     .map(workbookSummary)
     .map(item => ({ ...item, type: 'file' }));
   return { folder: clean, folders, files };
@@ -358,7 +397,7 @@ function broadcastList() {
   broadcast(msg);
 }
 
-function safeReturnTo(value, fallback = '/latest') {
+function safeReturnTo(value, fallback = '/workbench') {
   const target = String(value || '').trim();
   if (!target.startsWith('/') || target.startsWith('//')) return fallback;
   if (target.startsWith('/auth/')) return fallback;
@@ -444,19 +483,23 @@ wss.on('connection', ws => {
       if (msg.type === 'edit') {
         applyCellEdit(wbInfo, msg);
         scheduleSave(wbInfo.id);
+        scheduleDriveSync(wbInfo.id);
         broadcast(msg, ws, wbInfo.id);
       } else if (msg.type === 'merge') {
         const info = wbInfo.state.sheets[msg.sheet];
         if (info && info.rows[msg.row]) info.rows[msg.row].merge = !!msg.value;
         scheduleSave(wbInfo.id);
+        scheduleDriveSync(wbInfo.id);
         broadcast(msg, ws, wbInfo.id);
       } else if (msg.type === 'row') {
         if (applyRowOp(wbInfo, msg)) {
           scheduleSave(wbInfo.id);
+          scheduleDriveSync(wbInfo.id);
           broadcast(msg, ws, wbInfo.id);
         }
       } else if (msg.type === 'style') {
         if (applyStyle(wbInfo, msg)) {
+          scheduleDriveSync(wbInfo.id);
           broadcast(msg, ws, wbInfo.id);
         }
       } else if (msg.type === 'switchSheet') {
@@ -483,12 +526,13 @@ wss.on('connection', ws => {
 // 发起 Google 登录
 app.get('/auth/google', (req, res, next) => {
   if (!googleConfig.clientID) return res.status(503).send('Google OAuth not configured');
-  req.session.returnTo = safeReturnTo(req.query.returnTo, '/latest');
+  req.session.returnTo = safeReturnTo(req.query.returnTo, '/workbench');
   passport.authenticate('google', {
     scope: [
       'profile',
       'email',
       'https://www.googleapis.com/auth/drive',
+      'https://www.googleapis.com/auth/spreadsheets',
     ],
     accessType: 'offline',
     prompt: 'consent',
@@ -506,7 +550,7 @@ app.get('/auth/google/callback', (req, res, next) => {
 
       req.session.save(saveErr => {
         if (saveErr) return next(saveErr);
-        const returnTo = safeReturnTo(req.session.returnTo, '/latest');
+        const returnTo = safeReturnTo(req.session.returnTo, '/workbench');
         delete req.session.returnTo;
         res.redirect(returnTo);
       });
@@ -516,7 +560,7 @@ app.get('/auth/google/callback', (req, res, next) => {
 
 // 登出
 app.get('/auth/logout', (req, res) => {
-  const returnTo = safeReturnTo(req.query.returnTo, '/latest');
+  const returnTo = safeReturnTo(req.query.returnTo, '/workbench');
   req.logout(() => {
     req.session.destroy(() => {
       res.clearCookie('pd.sid');
@@ -719,6 +763,7 @@ app.post('/api/edit/:id', express.json(), (req, res) => {
   const msg = req.body || {};
   if (!wbInfo || !applyCellEdit(wbInfo, msg)) return res.status(404).json({ ok: false, error: 'row_not_found' });
   scheduleSave(wbInfo.id);
+  scheduleDriveSync(wbInfo.id);
   broadcast({ type: 'edit', workbookId: wbInfo.id, sheet: msg.sheet, row: msg.row, col: msg.col, field: msg.field, value: String(msg.value || '') }, null, wbInfo.id);
   res.json({ ok: true });
 });
@@ -729,6 +774,7 @@ app.post('/api/merge/:id', express.json(), (req, res) => {
   if (!info || !info.rows[msg.row]) return res.status(404).json({ ok: false, error: 'row_not_found' });
   info.rows[msg.row].merge = !!msg.value;
   scheduleSave(wbInfo.id);
+  scheduleDriveSync(wbInfo.id);
   broadcast({ type: 'merge', workbookId: wbInfo.id, sheet: msg.sheet, row: msg.row, value: !!msg.value }, null, wbInfo.id);
   res.json({ ok: true });
 });
@@ -737,6 +783,7 @@ app.post('/api/row/:id', express.json(), (req, res) => {
   const msg = req.body || {};
   if (!wbInfo || !applyRowOp(wbInfo, msg)) return res.status(400).json({ ok: false, error: 'row_op_failed' });
   scheduleSave(wbInfo.id);
+  scheduleDriveSync(wbInfo.id);
   broadcast({ type: 'row', workbookId: wbInfo.id, sheet: msg.sheet, row: msg.row, action: msg.action }, null, wbInfo.id);
   res.json({ ok: true });
 });
@@ -744,6 +791,7 @@ app.post('/api/style/:id', express.json(), (req, res) => {
   const wbInfo = workbooks.get(req.params.id);
   const msg = req.body || {};
   if (!wbInfo || !applyStyle(wbInfo, msg)) return res.status(400).json({ ok: false, error: 'style_failed' });
+  scheduleDriveSync(wbInfo.id);
   broadcast({ type: 'style', workbookId: wbInfo.id, sheet: msg.sheet, row: msg.row, col: msg.col, field: msg.field, style: msg.style || {} }, null, wbInfo.id);
   res.json({ ok: true });
 });
@@ -757,45 +805,105 @@ app.post('/api/save/:id', express.json(), (req, res) => {
 
 // ---- Google Drive API Routes ----
 
-// 获取 Google Drive 上的 XLSX 文件列表（含共享文件）
-app.get('/api/drive/files', (req, res) => {
+function driveItemSummary(file) {
+  const name = file.name || '';
+  const isFolder = file.mimeType === 'application/vnd.google-apps.folder';
+  const isSpreadsheet = isFolder ? false : (
+    file.isSpreadsheet ||
+    file.mimeType === 'application/vnd.google-apps.spreadsheet' ||
+    file.mimeType === 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' ||
+    file.mimeType === 'application/vnd.ms-excel' ||
+    /\.xlsx?$/i.test(name)
+  );
+  return {
+    id: file.id,
+    name,
+    mimeType: file.mimeType,
+    isFolder,
+    isSpreadsheet,
+    size: file.size,
+    modifiedTime: file.modifiedTime,
+    createdTime: file.createdTime,
+    owners: file.owners,
+    webViewLink: file.webViewLink,
+  };
+}
+
+// 浏览当前 Google Drive 文件夹
+app.get('/api/drive/items', async (req, res) => {
   if (!req.isAuthenticated()) {
     return res.status(401).json({ ok: false, error: 'login_required' });
   }
   try {
     const drive = driveService.getDriveService(req.user);
-    driveService.findOrCreateRootFolder(drive).then(rootId => {
-      return driveService.listDriveFiles(drive, rootId);
-    }).then(files => {
-      const items = files
-        .filter(f => {
-          const name = (f.name || '').toLowerCase();
-          return f.mimeType === 'application/vnd.google-apps.folder' ||
-                 f.mimeType === 'application/vnd.google-apps.spreadsheet' ||
-                 f.mimeType === 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' ||
-                 f.mimeType === 'application/vnd.ms-excel' ||
-                 name.endsWith('.xlsx') || name.endsWith('.xls');
-        })
-        .map(f => ({
-          id: f.id,
-          name: f.name,
-          mimeType: f.mimeType,
-          isFolder: f.mimeType === 'application/vnd.google-apps.folder',
-          size: f.size,
-          modifiedTime: f.modifiedTime,
-          owners: f.owners,
-        }));
-      res.json({ ok: true, files: items });
-    }).catch(err => {
-      console.error('Drive list error:', err);
-      res.status(500).json({ ok: false, error: err.message });
-    });
+    const folderId = String(req.query.folderId || 'root');
+    const files = await driveService.listDriveItems(drive, folderId);
+    res.json({ ok: true, folderId, items: files.map(driveItemSummary) });
   } catch (e) {
     res.status(500).json({ ok: false, error: e.message });
   }
 });
 
-// 上传本地 XLSX 到 Google Drive，并加载到当前工作台
+// 兼容旧 Drive 文件选择器
+app.get('/api/drive/files', async (req, res) => {
+  if (!req.isAuthenticated()) {
+    return res.status(401).json({ ok: false, error: 'login_required' });
+  }
+  try {
+    const drive = driveService.getDriveService(req.user);
+    const files = await driveService.listDriveItems(drive, String(req.query.folderId || 'root'));
+    res.json({ ok: true, files: files.map(driveItemSummary) });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
+app.post('/api/drive/folder', express.json(), async (req, res) => {
+  if (!req.isAuthenticated()) return res.status(401).json({ ok: false, error: 'login_required' });
+  try {
+    const drive = driveService.getDriveService(req.user);
+    const name = safeName(req.body && req.body.name || '新建文件夹');
+    const folder = await driveService.createFolder(drive, req.body && req.body.folderId || 'root', name);
+    res.json({ ok: true, item: driveItemSummary(folder) });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+app.post('/api/drive/rename', express.json(), async (req, res) => {
+  if (!req.isAuthenticated()) return res.status(401).json({ ok: false, error: 'login_required' });
+  try {
+    const drive = driveService.getDriveService(req.user);
+    const item = await driveService.renameFile(drive, req.body && req.body.fileId, safeName(req.body && req.body.name || ''));
+    res.json({ ok: true, item: driveItemSummary(item) });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+app.post('/api/drive/move', express.json(), async (req, res) => {
+  if (!req.isAuthenticated()) return res.status(401).json({ ok: false, error: 'login_required' });
+  try {
+    const drive = driveService.getDriveService(req.user);
+    const item = await driveService.moveFile(drive, req.body && req.body.fileId, req.body && req.body.targetFolderId || 'root');
+    res.json({ ok: true, item: driveItemSummary(item) });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+app.post('/api/drive/trash', express.json(), async (req, res) => {
+  if (!req.isAuthenticated()) return res.status(401).json({ ok: false, error: 'login_required' });
+  try {
+    const drive = driveService.getDriveService(req.user);
+    const item = await driveService.trashFile(drive, req.body && req.body.fileId);
+    res.json({ ok: true, item });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// 上传本地 XLSX 到当前 Google Drive 文件夹
 app.post('/api/drive/upload', express.raw({ type: '*/*', limit: '80mb' }), async (req, res) => {
   if (!req.isAuthenticated()) {
     return res.status(401).json({ ok: false, error: 'login_required' });
@@ -810,11 +918,11 @@ app.post('/api/drive/upload', express.raw({ type: '*/*', limit: '80mb' }), async
     if (!state.sheetNames.length) throw new Error('no usable sheets');
 
     const drive = driveService.getDriveService(req.user);
-    const rootId = await driveService.findOrCreateRootFolder(drive);
-    const uploaded = await driveService.uploadFile(drive, rootId, originalName, req.body);
+    const uploaded = await driveService.uploadFile(drive, String(req.query.folderId || 'root'), originalName, req.body);
     const now = new Date().toISOString();
+    const id = 'drive:' + uploaded.id;
     const wbInfo = {
-      id: uploaded.id,
+      id,
       name: uploaded.name || originalName,
       folder: '',
       filePath: null,
@@ -822,7 +930,10 @@ app.post('/api/drive/upload', express.raw({ type: '*/*', limit: '80mb' }), async
       updatedAt: now,
       state,
       _driveFileId: uploaded.id,
+      _driveMimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      _sourceBuffer: Buffer.from(req.body),
       _user: req.user,
+      driveSync: { status: 'synced', time: now, error: '' },
     };
 
     workbooks.set(wbInfo.id, wbInfo);
@@ -830,7 +941,7 @@ app.post('/api/drive/upload', express.raw({ type: '*/*', limit: '80mb' }), async
     res.json({
       ok: true,
       workbook: workbookSummary(wbInfo),
-      driveFile: uploaded,
+      driveFile: driveItemSummary(uploaded),
       state,
     });
   } catch (err) {
@@ -846,26 +957,41 @@ app.post('/api/drive/open/:fileId', (req, res) => {
   }
   try {
     const drive = driveService.getDriveService(req.user);
-    driveService.downloadFile(drive, req.params.fileId)
+    const workbookId = 'drive:' + req.params.fileId;
+    const existing = workbooks.get(workbookId);
+    if (existing) {
+      if (!existing._user) existing._user = req.user;
+      return res.json({ ok: true, workbook: workbookSummary(existing), state: existing.state });
+    }
+    driveService.getFileInfo(drive, req.params.fileId)
+      .then(fileInfo => driveService.downloadFile(drive, req.params.fileId).then(buffer => ({ fileInfo, buffer })))
+      .then(({ fileInfo, buffer }) => {
+        if (fileInfo.mimeType !== 'application/vnd.google-apps.spreadsheet' && !driveItemSummary(fileInfo).isSpreadsheet) {
+          throw new Error('not_spreadsheet');
+        }
+        return { fileInfo, buffer };
+      })
       .then(buffer => {
-        const state = parseWorkbookBuffer(buffer);
+        const fileInfo = buffer.fileInfo;
+        const sourceBuffer = buffer.buffer;
+        const state = parseWorkbookBuffer(sourceBuffer);
         if (!state.sheetNames.length) throw new Error('no usable sheets');
-        // 获取文件信息
-        return driveService.getFileInfo(drive, req.params.fileId).then(fileInfo => {
-          const id = req.params.fileId;
-          workbooks.set(id, {
-            id,
-            name: fileInfo.name || decodeURIComponent(req.query.name || 'GoogleDrive文件'),
-            folder: '',
-            filePath: null,
-            uploadedAt: fileInfo.modifiedTime || new Date().toISOString(),
-            updatedAt: new Date().toISOString(),
-            state,
-            _driveFileId: id,
-            _user: req.user, // 保存用户引用以用于后续保存
-          });
-          res.json({ ok: true, workbook: workbookSummary(workbooks.get(id)), state });
+        const id = workbookId;
+        workbooks.set(id, {
+          id,
+          name: fileInfo.name || decodeURIComponent(req.query.name || 'GoogleDrive文件'),
+          folder: '',
+          filePath: null,
+          uploadedAt: fileInfo.modifiedTime || new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+          state,
+          _driveFileId: req.params.fileId,
+          _driveMimeType: fileInfo.mimeType,
+          _sourceBuffer: fileInfo.mimeType === 'application/vnd.google-apps.spreadsheet' ? null : sourceBuffer,
+          _user: req.user,
+          driveSync: { status: 'synced', time: new Date().toISOString(), error: '' },
         });
+        res.json({ ok: true, workbook: workbookSummary(workbooks.get(id)), state });
       })
       .catch(err => {
         console.error('Drive open error:', err);
