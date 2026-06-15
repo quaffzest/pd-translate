@@ -18,7 +18,7 @@ userNameInput.onchange=function(){if(this.value.trim()&&ws&&ws.readyState===1)ws
 var wsConnTimer=null;
 function startPolling(){
   if(connDot)connDot.className="dot yellow";
-  if(connLabel)connLabel.textContent="轮询模式";
+  if(connLabel)connLabel.textContent="轮询模式";if(document.getElementById("connStatus"))document.getElementById("connStatus").textContent="🔌轮询模式";
   loadViaHttp();
   setInterval(loadViaHttp,3000);
 }
@@ -37,7 +37,7 @@ function connectWS(){
     ws.onopen=function(){if(wsConnTimer)clearTimeout(wsConnTimer);
       connected=true;
       connDot.className="dot green";
-      connLabel.textContent="已连接";
+      connLabel.textContent="已连接";if(document.getElementById("connStatus"))document.getElementById("connStatus").textContent="✅已连接";
       if(userNameInput.value.trim())ws.send(JSON.stringify({type:"setName",name:userNameInput.value.trim()}));
     };
     ws.onmessage=function(ev){
@@ -84,10 +84,10 @@ function connectWS(){
     ws.onclose=function(){
       connected=false;
       connDot.className="dot gray";
-      connLabel.textContent="已断线，3秒后重连…";
+      connLabel.textContent="已断线，3秒后重连…";if(document.getElementById("connStatus"))document.getElementById("connStatus").textContent="🔌重连中…";
       setTimeout(connectWS,3000);
     };
-    ws.onerror=function(){connLabel.textContent="连接失败"}
+    ws.onerror=function(){connLabel.textContent="连接失败";if(document.getElementById("connStatus"))document.getElementById("connStatus").textContent="❌连接失败"}
   }catch(e){connLabel.textContent="连接失败";setTimeout(connectWS,5000)}
 }
 
@@ -170,7 +170,7 @@ body{font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-seri
 
 <div class="topbar">
   <span class="logo">🌐 翻译工作台（在线协作版）</span>
-  <span class="collab-status" id="connStatus">🔌 连接中…</span>
+  
   <input type="text" id="userNameInput" placeholder="输入你的名字" style="width:100px;padding:4px 8px;border:1px solid #d0d5dd;border-radius:5px;font-size:12px;outline:none;">
   <span class="btn sec" id="saveToServerBtn">☁️ 保存到服务器</span>
   <span class="btn sec" id="exportTxtBtn">📄 导出终稿 txt</span>
