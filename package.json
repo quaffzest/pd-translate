@@ -6,6 +6,7 @@
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1069.0",
+    "dotenv": "^16.4.5",
     "docx": "^9.7.1",
     "express": "^4.21.0",
     "express-session": "^1.19.0",

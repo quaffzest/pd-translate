@@ -25,6 +25,8 @@ TENCENT_COS_REGION=ap-guangzhou
 TENCENT_COS_PREFIX=pd-translate
 ```
 
+The simplest way is to put the values into a `.env` file in the project root and let the app load it automatically.
+
 `TENCENT_COS_PREFIX` keeps this app's files isolated in the bucket. The app writes:
 
 - `pd-translate/workbooks/_meta.json`
