@@ -18,6 +18,7 @@ const passport = require('passport');
 const GoogleStrategy = require('passport-google-oauth20').Strategy;
 const googleConfig = require('./config/google');
 const driveService = require('./services/driveService');
+const cosStorage = require('./services/cosStorage');
 
 const PORT = process.env.PORT || 3000;
 console.log('Starting pd-translate, GOOGLE_CLIENT_ID set:', !!process.env.GOOGLE_CLIENT_ID);
@@ -55,6 +56,90 @@ function readMeta() {
 
 function writeMeta() {
   fs.writeFileSync(META_FILE, JSON.stringify(meta, null, 2));
+  syncMetaToCloud();
+}
+
+function cloudWorkbookKeyFromPath(filePath) {
+  const rel = path.relative(WORKBOOK_DIR, filePath).replace(/\\/g, '/');
+  return `workbooks/${rel}`;
+}
+
+function cloudMetaKey() {
+  return 'workbooks/_meta.json';
+}
+
+function syncMetaToCloud() {
+  if (!cosStorage.isConfigured()) return;
+  cosStorage.putObject(cloudMetaKey(), Buffer.from(JSON.stringify(meta, null, 2)), 'application/json')
+    .catch(err => console.error('COS meta sync failed:', err.message));
+}
+
+async function syncWorkbookToCloud(wbInfo, buffer) {
+  if (!cosStorage.isConfigured() || !wbInfo || !wbInfo.filePath) return null;
+  const body = buffer || fs.readFileSync(wbInfo.filePath);
+  return cosStorage.putObject(
+    cloudWorkbookKeyFromPath(wbInfo.filePath),
+    body,
+    'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+  );
+}
+
+function syncWorkbookToCloudSoon(wbInfo, buffer) {
+  if (!cosStorage.isConfigured() || !wbInfo || !wbInfo.filePath) return;
+  syncWorkbookToCloud(wbInfo, buffer).catch(err => {
+    console.error('COS workbook sync failed:', err.message);
+  });
+}
+
+async function deleteWorkbookFromCloud(wbInfo) {
+  if (!cosStorage.isConfigured() || !wbInfo || !wbInfo.filePath) return null;
+  return cosStorage.deleteObject(cloudWorkbookKeyFromPath(wbInfo.filePath));
+}
+
+async function uploadAllLocalWorkbooksToCloud() {
+  if (!cosStorage.isConfigured()) return null;
+  const files = walkFiles(WORKBOOK_DIR).filter(file => /\.xlsx?$/i.test(file));
+  const dirs = walkDirs(WORKBOOK_DIR);
+  for (const file of files) {
+    await cosStorage.putObject(
+      cloudWorkbookKeyFromPath(file),
+      fs.readFileSync(file),
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+    );
+  }
+  for (const dir of dirs) {
+    const rel = path.relative(WORKBOOK_DIR, dir).replace(/\\/g, '/');
+    if (rel) await cosStorage.putObject(`workbooks/${rel}/.keep`, Buffer.from(''), 'application/octet-stream');
+  }
+  await cosStorage.putObject(cloudMetaKey(), Buffer.from(JSON.stringify(meta, null, 2)), 'application/json');
+  return files.length;
+}
+
+async function restoreCloudWorkbooks() {
+  if (!cosStorage.isConfigured()) {
+    console.log('Tencent COS storage disabled');
+    return null;
+  }
+  console.log('Tencent COS storage enabled; restoring workbooks cache');
+  fs.mkdirSync(WORKBOOK_DIR, { recursive: true });
+  const objects = await cosStorage.listObjects('workbooks');
+  if (!objects.length) return 0;
+  fs.rmSync(WORKBOOK_DIR, { recursive: true, force: true });
+  fs.mkdirSync(WORKBOOK_DIR, { recursive: true });
+  for (const item of objects) {
+    if (item.key.endsWith('/.keep')) {
+      const relDir = item.key.replace(/^workbooks\//, '').replace(/\/\.keep$/, '');
+      fs.mkdirSync(path.join(WORKBOOK_DIR, relDir), { recursive: true });
+      continue;
+    }
+    if (item.key !== cloudMetaKey() && !/\.xlsx?$/i.test(item.key)) continue;
+    const rel = item.key.replace(/^workbooks\//, '');
+    const dest = item.key === cloudMetaKey() ? META_FILE : path.join(WORKBOOK_DIR, rel);
+    fs.mkdirSync(path.dirname(dest), { recursive: true });
+    const body = await cosStorage.getObject(item.key);
+    fs.writeFileSync(dest, body);
+  }
+  return objects.length;
 }
 
 function walkFiles(dir) {
@@ -140,6 +225,17 @@ function xlsxStyleFromModel(style) {
     if (input.align) out.alignment.horizontal = input.align;
     if (input.wrap === true) out.alignment.wrapText = true;
     if (input.wrap === false) out.alignment.wrapText = false;
+  }
+  return out;
+}
+
+function walkDirs(dir) {
+  if (!fs.existsSync(dir)) return [];
+  const out = [];
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    if (!entry.isDirectory()) continue;
+    const full = path.join(dir, entry.name);
+    out.push(full, ...walkDirs(full));
   }
   return out;
 }
@@ -483,9 +579,10 @@ function writeWorkbook(wbInfo) {
       });
   }
   
-  // 本地文件保存（如果有 filePath）
+  // Save the local cache when this workbook has a backing file.
   if (wbInfo.filePath) {
     fs.writeFileSync(wbInfo.filePath, buffer);
+    syncWorkbookToCloudSoon(wbInfo, buffer);
   }
   
   wbInfo.updatedAt = new Date().toISOString();
@@ -497,6 +594,7 @@ async function forceSaveWorkbook(wbInfo) {
   const buffer = workbookToBuffer(wbInfo);
   if (wbInfo.filePath) {
     fs.writeFileSync(wbInfo.filePath, buffer);
+    await syncWorkbookToCloud(wbInfo, buffer);
   }
   if (wbInfo._driveFileId && wbInfo._user) {
     await syncWorkbookToDrive(wbInfo);
@@ -1023,29 +1121,36 @@ app.get('/api/properties', (req, res) => {
     res.status(400).json({ ok: false, error: e.message });
   }
 });
-app.post('/api/folder', express.json(), (req, res) => {
+app.post('/api/folder', express.json(), async (req, res) => {
   try {
     const parent = resolveFolder(req.body && req.body.folder || '');
     const name = safeName(req.body && req.body.name || '新建文件夹');
     if (!name) throw new Error('invalid_name');
-    fs.mkdirSync(path.join(parent.full, name), { recursive: false });
+    const full = path.join(parent.full, name);
+    fs.mkdirSync(full, { recursive: false });
+    if (cosStorage.isConfigured()) {
+      const rel = path.relative(WORKBOOK_DIR, full).replace(/\\/g, '/');
+      await cosStorage.putObject(`workbooks/${rel}/.keep`, Buffer.from(''), 'application/octet-stream');
+    }
     res.json({ ok: true, items: listItems(parent.clean) });
   } catch (e) {
     res.status(400).json({ ok: false, error: e.message });
   }
 });
-app.post('/api/delete', express.json(), (req, res) => {
+app.post('/api/delete', express.json(), async (req, res) => {
   try {
     const body = req.body || {};
     if (body.type === 'folder') {
       const folder = resolveFolder(body.path || '');
       if (!folder.clean) throw new Error('cannot_delete_root');
       fs.rmSync(folder.full, { recursive: true, force: true });
+      if (cosStorage.isConfigured()) await cosStorage.deletePrefix(`workbooks/${folder.clean}`);
       loadAllWorkbooks();
       return res.json({ ok: true });
     }
     const wbInfo = workbooks.get(String(body.id || ''));
     if (!wbInfo) return res.status(404).json({ ok: false, error: 'workbook_not_found' });
+    await deleteWorkbookFromCloud(wbInfo);
     fs.rmSync(wbInfo.filePath, { force: true });
     delete meta[wbInfo.id];
     writeMeta();
@@ -1056,7 +1161,7 @@ app.post('/api/delete', express.json(), (req, res) => {
     res.status(400).json({ ok: false, error: e.message });
   }
 });
-app.post('/api/rename', express.json(), (req, res) => {
+app.post('/api/rename', express.json(), async (req, res) => {
   try {
     const body = req.body || {};
     const name = safeName(body.name || '');
@@ -1066,6 +1171,10 @@ app.post('/api/rename', express.json(), (req, res) => {
       if (!folder.clean) throw new Error('cannot_rename_root');
       const dest = path.join(path.dirname(folder.full), name);
       fs.renameSync(folder.full, dest);
+      if (cosStorage.isConfigured()) {
+        await cosStorage.deletePrefix(`workbooks/${folder.clean}`);
+        await uploadAllLocalWorkbooksToCloud();
+      }
       loadAllWorkbooks();
       return res.json({ ok: true });
     }
@@ -1074,13 +1183,14 @@ app.post('/api/rename', express.json(), (req, res) => {
     wbInfo.name = name;
     meta[wbInfo.id] = { ...(meta[wbInfo.id] || {}), name, uploadedAt: wbInfo.uploadedAt };
     writeMeta();
+    await syncWorkbookToCloud(wbInfo);
     broadcastList();
     res.json({ ok: true, workbook: workbookSummary(wbInfo) });
   } catch (e) {
     res.status(400).json({ ok: false, error: e.message });
   }
 });
-app.post('/api/move', express.json(), (req, res) => {
+app.post('/api/move', express.json(), async (req, res) => {
   try {
     const body = req.body || {};
     const target = resolveFolder(body.target || '');
@@ -1091,26 +1201,37 @@ app.post('/api/move', express.json(), (req, res) => {
       if (target.full === folder.full || target.full.startsWith(folder.full + path.sep)) throw new Error('cannot_move_folder_into_itself');
       const dest = path.join(target.full, path.basename(folder.full));
       fs.renameSync(folder.full, dest);
+      if (cosStorage.isConfigured()) {
+        await cosStorage.deletePrefix(`workbooks/${folder.clean}`);
+        await uploadAllLocalWorkbooksToCloud();
+      }
       loadAllWorkbooks();
       return res.json({ ok: true });
     }
     const wbInfo = workbooks.get(String(body.id || ''));
     if (!wbInfo) return res.status(404).json({ ok: false, error: 'workbook_not_found' });
+    await deleteWorkbookFromCloud(wbInfo);
     const dest = path.join(target.full, path.basename(wbInfo.filePath));
     fs.renameSync(wbInfo.filePath, dest);
     wbInfo.filePath = dest;
     wbInfo.folder = target.clean;
     workbooks.set(wbInfo.id, wbInfo);
+    await syncWorkbookToCloud(wbInfo);
     broadcastList();
     res.json({ ok: true, workbook: workbookSummary(wbInfo) });
   } catch (e) {
     res.status(400).json({ ok: false, error: e.message });
   }
 });
-app.get('/api/download/:id', (req, res) => {
+app.get('/api/download/:id', async (req, res) => {
   const wbInfo = workbooks.get(req.params.id);
   if (!wbInfo) return res.status(404).json({ ok: false, error: 'workbook_not_found' });
-  res.download(wbInfo.filePath, wbInfo.name);
+  try {
+    await forceSaveWorkbook(wbInfo);
+    res.download(wbInfo.filePath, wbInfo.name);
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
 });
 app.get('/api/document/:id', (req, res) => {
   const wbInfo = workbooks.get(req.params.id);
@@ -1136,7 +1257,7 @@ app.post('/api/data/:id', express.json(), (req, res) => {
   if (!wbInfo) return res.status(404).json({ ok: false, error: 'workbook_not_found' });
   res.json({ workbook: workbookSummary(wbInfo), state: wbInfo.state });
 });
-app.post('/api/upload', express.raw({ type: '*/*', limit: '80mb' }), (req, res) => {
+app.post('/api/upload', express.raw({ type: '*/*', limit: '80mb' }), async (req, res) => {
   if (!req.body || !req.body.length) return res.status(400).json({ ok: false, error: 'empty_file' });
   try {
     const originalName = safeName(decodeURIComponent(req.header('X-File-Name') || '协作主表.xlsx'));
@@ -1152,6 +1273,7 @@ app.post('/api/upload', express.raw({ type: '*/*', limit: '80mb' }), (req, res) 
     workbooks.set(id, wbInfo);
     meta[id] = { name: originalName, uploadedAt: now };
     writeMeta();
+    await syncWorkbookToCloud(wbInfo, req.body);
     broadcastList();
     res.json({ ok: true, workbook: workbookSummary(wbInfo), state });
   } catch (e) {
@@ -1192,6 +1314,7 @@ app.post('/api/style/:id', express.json(), (req, res) => {
   const wbInfo = workbooks.get(req.params.id);
   const msg = req.body || {};
   if (!wbInfo || !applyStyle(wbInfo, msg)) return res.status(400).json({ ok: false, error: 'style_failed' });
+  scheduleSave(wbInfo.id);
   scheduleDriveSync(wbInfo.id);
   broadcast({ type: 'style', workbookId: wbInfo.id, sheet: msg.sheet, row: msg.row, col: msg.col, field: msg.field, style: msg.style || {} }, null, wbInfo.id);
   res.json({ ok: true });
@@ -1414,5 +1537,18 @@ app.post('/api/drive/open/:fileId', async (req, res) => {
   }
 });
 
-loadAllWorkbooks();
-server.listen(PORT, () => console.log('Server: http://localhost:' + PORT));
+async function startServer() {
+  let restoredCount = null;
+  try {
+    restoredCount = await restoreCloudWorkbooks();
+  } catch (err) {
+    console.error('COS restore failed:', err.message);
+  }
+  loadAllWorkbooks();
+  if (cosStorage.isConfigured() && restoredCount === 0) {
+    uploadAllLocalWorkbooksToCloud().catch(err => console.error('COS initial sync failed:', err.message));
+  }
+  server.listen(PORT, () => console.log('Server: http://localhost:' + PORT));
+}
+
+startServer();
