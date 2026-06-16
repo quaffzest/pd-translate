@@ -1,7 +1,16 @@
 const express = require('express');
 const http = require('http');
 const { WebSocketServer } = require('ws');
-const XLSX = require('xlsx');
+const XLSX = require('xlsx-js-style');
+const {
+  AlignmentType,
+  Document,
+  Packer,
+  Paragraph,
+  ShadingType,
+  TextRun,
+  UnderlineType,
+} = require('docx');
 const path = require('path');
 const fs = require('fs');
 const session = require('express-session');
@@ -87,12 +96,129 @@ function makeId(name) {
   return Date.now().toString(36) + '_' + base;
 }
 
+function stripHashColor(value) {
+  const text = String(value || '').replace(/^#/, '').toUpperCase();
+  return /^[0-9A-F]{6}$/.test(text) ? text : '';
+}
+
+function modelStyleFromXlsx(style) {
+  const out = {};
+  if (!style) return out;
+  const font = style.font || {};
+  if (font.bold) out.bold = true;
+  if (font.italic) out.italic = true;
+  if (font.underline) out.underline = true;
+  if (font.strike) out.strike = true;
+  if (font.sz) out.fontSize = String(font.sz);
+  if (font.color && font.color.rgb) out.fontColor = '#' + String(font.color.rgb).slice(-6);
+  const fill = style.fill && (style.fill.fgColor || style.fill.bgColor);
+  if (fill && fill.rgb && String(fill.rgb).slice(-6) !== '000000') out.fillColor = '#' + String(fill.rgb).slice(-6);
+  if (style.alignment && style.alignment.horizontal) out.align = String(style.alignment.horizontal).toLowerCase();
+  if (style.alignment && style.alignment.wrapText) out.wrap = true;
+  return out;
+}
+
+function xlsxStyleFromModel(style) {
+  const input = style || {};
+  const out = {};
+  if (input.bold || input.italic || input.underline || input.strike || input.fontSize || input.fontColor) {
+    out.font = {};
+    if (input.bold) out.font.bold = true;
+    if (input.italic) out.font.italic = true;
+    if (input.underline) out.font.underline = true;
+    if (input.strike) out.font.strike = true;
+    if (input.fontSize) out.font.sz = Number(input.fontSize);
+    const color = stripHashColor(input.fontColor);
+    if (color) out.font.color = { rgb: color };
+  }
+  const fill = stripHashColor(input.fillColor);
+  if (fill) {
+    out.fill = { patternType: 'solid', fgColor: { rgb: fill } };
+  }
+  if (input.align || input.wrap === true || input.wrap === false) {
+    out.alignment = {};
+    if (input.align) out.alignment.horizontal = input.align;
+    if (input.wrap === true) out.alignment.wrapText = true;
+    if (input.wrap === false) out.alignment.wrapText = false;
+  }
+  return out;
+}
+
+function mergeCellStyle(existing, next) {
+  if (!existing) return next;
+  return {
+    ...existing,
+    ...next,
+    font: { ...(existing.font || {}), ...(next.font || {}) },
+    fill: { ...(existing.fill || {}), ...(next.fill || {}) },
+    alignment: { ...(existing.alignment || {}), ...(next.alignment || {}) },
+  };
+}
+
+function setSheetCell(ws, rowIndex, colIndex, value, style) {
+  const addr = XLSX.utils.encode_cell({ r: rowIndex, c: colIndex });
+  if (!ws[addr]) ws[addr] = { t: 's', v: '' };
+  XLSX.utils.sheet_add_aoa(ws, [[value]], { origin: addr });
+  const modelStyle = xlsxStyleFromModel(style);
+  if (Object.keys(modelStyle).length) ws[addr].s = mergeCellStyle(ws[addr].s, modelStyle);
+}
+
+function finalContentIndex(row) {
+  const content = row && row.content || [];
+  for (let i = content.length - 1; i >= 0; i--) {
+    if (String(content[i] || '').trim()) return i;
+  }
+  return -1;
+}
+
+function finalTextAndStyle(row) {
+  const idx = finalContentIndex(row);
+  if (idx < 0) return { text: '', style: {} };
+  const style = row.styles && row.styles.content && row.styles.content[idx] || {};
+  return { text: String(row.content[idx] || '').trim(), style };
+}
+
+function buildDocumentModel(state) {
+  const sheetName = state.currentSheet || (state.sheetNames || [])[0] || '';
+  const sheet = state.sheets && state.sheets[sheetName];
+  const paragraphs = [];
+  if (!sheet) return { sheetName, paragraphs, page: defaultDocumentPage() };
+
+  for (let i = 0; i < sheet.rows.length; i++) {
+    const row = sheet.rows[i];
+    const current = finalTextAndStyle(row);
+    if (!current.text) continue;
+    const paragraph = { rows: [i], runs: [{ text: current.text, style: current.style || {} }] };
+    let next = i + 1;
+    while (next < sheet.rows.length && sheet.rows[next].merge) {
+      const merged = finalTextAndStyle(sheet.rows[next]);
+      if (merged.text) {
+        paragraph.rows.push(next);
+        paragraph.runs.push({ text: merged.text, style: merged.style || {} });
+      }
+      next++;
+    }
+    paragraphs.push(paragraph);
+  }
+
+  return { sheetName, paragraphs, page: defaultDocumentPage() };
+}
+
+function defaultDocumentPage() {
+  return {
+    margin: { top: 1440, right: 1440, bottom: 1440, left: 1440 },
+    paragraph: { line: 420, before: 0, after: 180 },
+    font: 'SimSun',
+    fontSize: 24,
+  };
+}
+
 function parseWorkbookBuffer(buffer) {
-  return parseWorkbook(XLSX.read(buffer, { type: 'buffer' }));
+  return parseWorkbook(XLSX.read(buffer, { type: 'buffer', cellStyles: true }));
 }
 
 function parseWorkbookFile(filePath) {
-  return parseWorkbook(XLSX.readFile(filePath));
+  return parseWorkbook(XLSX.readFile(filePath, { cellStyles: true }));
 }
 
 function parseWorkbook(wb) {
@@ -102,7 +228,8 @@ function parseWorkbook(wb) {
 
   for (const sn of wb.SheetNames) {
     if (sn === '使用说明·流程' || sn === '说明') continue;
-    const rows = XLSX.utils.sheet_to_json(wb.Sheets[sn], { header: 1, defval: '' });
+    const ws = wb.Sheets[sn];
+    const rows = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' });
     if (rows.length < 2) continue;
 
     const h = rows[0];
@@ -119,14 +246,19 @@ function parseWorkbook(wb) {
       headers.push({ name: hn, idx: ci });
     }
 
-    const sheetRows = dr.map(r => {
+    const sheetRows = dr.map((r, rowOffset) => {
+      const excelRow = rowOffset + 1;
       const content = headers.map(c => String(r[c.idx] || '').trim());
       const mergeValue = mi >= 0 ? String(r[mi] || '').trim().toUpperCase() : '';
       return {
         seq: String(r[si] || '').trim(),
         kr: String(r[ki] || '').trim(),
         content,
-        styles: { seq: {}, kr: {}, content: headers.map(() => ({})) },
+        styles: {
+          seq: modelStyleFromXlsx((ws[XLSX.utils.encode_cell({ r: excelRow, c: si })] || {}).s),
+          kr: modelStyleFromXlsx((ws[XLSX.utils.encode_cell({ r: excelRow, c: ki })] || {}).s),
+          content: headers.map(c => modelStyleFromXlsx((ws[XLSX.utils.encode_cell({ r: excelRow, c: c.idx })] || {}).s)),
+        },
         merge: mergeValue === 'Y' || mergeValue === 'TRUE' || mergeValue === '1',
       };
     });
@@ -142,7 +274,7 @@ function parseWorkbook(wb) {
 }
 
 function workbookToBuffer(wbInfo) {
-  const wb = wbInfo._sourceBuffer ? XLSX.read(wbInfo._sourceBuffer, { type: 'buffer' }) : XLSX.utils.book_new();
+  const wb = wbInfo._sourceBuffer ? XLSX.read(wbInfo._sourceBuffer, { type: 'buffer', cellStyles: true }) : XLSX.utils.book_new();
   for (const sn of wbInfo.state.sheetNames) {
     const info = wbInfo.state.sheets[sn];
     let ws = wb.Sheets[sn];
@@ -151,26 +283,94 @@ function workbookToBuffer(wbInfo) {
       ws = XLSX.utils.aoa_to_sheet([header]);
       XLSX.utils.book_append_sheet(wb, ws, sn);
     }
-    const columns = [
-      { idx: info.seqIdx || 0, values: info.rows.map(row => row.seq || '') },
-      { idx: info.krIdx || 1, values: info.rows.map(row => row.kr || '') },
-      ...info.headers.map((header, contentIndex) => ({
-        idx: header.idx,
-        values: info.rows.map(row => (row.content || [])[contentIndex] || ''),
-      })),
-    ];
-    if (Number.isInteger(info.mergeIdx) && info.mergeIdx >= 0) {
-      columns.push({ idx: info.mergeIdx, values: info.rows.map(row => row.merge ? 'Y' : '') });
-    }
-    for (const col of columns) {
-      if (!Number.isInteger(col.idx) || col.idx < 0) continue;
-      const colName = XLSX.utils.encode_col(col.idx);
-      col.values.forEach((value, rowIndex) => {
-        XLSX.utils.sheet_add_aoa(ws, [[value]], { origin: `${colName}${rowIndex + 2}` });
+    info.rows.forEach((row, rowIndex) => {
+      const excelRow = rowIndex + 1;
+      const styles = row.styles || {};
+      setSheetCell(ws, excelRow, info.seqIdx || 0, row.seq || '', styles.seq || {});
+      setSheetCell(ws, excelRow, info.krIdx || 1, row.kr || '', styles.kr || {});
+      info.headers.forEach((header, contentIndex) => {
+        const value = (row.content || [])[contentIndex] || '';
+        const style = styles.content && styles.content[contentIndex] || {};
+        setSheetCell(ws, excelRow, header.idx, value, style);
       });
-    }
+      if (Number.isInteger(info.mergeIdx) && info.mergeIdx >= 0) {
+        setSheetCell(ws, excelRow, info.mergeIdx, row.merge ? 'Y' : '', {});
+      }
+    });
   }
   return XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
+}
+
+function docxAlignment(style) {
+  const align = String(style && style.align || '').toLowerCase();
+  if (align === 'center') return AlignmentType.CENTER;
+  if (align === 'right') return AlignmentType.RIGHT;
+  if (align === 'both' || align === 'justify') return AlignmentType.JUSTIFIED;
+  return AlignmentType.LEFT;
+}
+
+function docxRunFromModel(run, defaults) {
+  const style = run.style || {};
+  const options = {
+    text: run.text || '',
+    bold: !!style.bold,
+    italics: !!style.italic,
+    strike: !!style.strike,
+    size: Number(style.fontSize || defaults.fontSize) * 2,
+    font: defaults.font,
+  };
+  if (style.underline) options.underline = { type: UnderlineType.SINGLE };
+  const color = stripHashColor(style.fontColor);
+  if (color) options.color = color;
+  const fill = stripHashColor(style.fillColor);
+  if (fill) {
+    options.shading = { type: ShadingType.CLEAR, color: 'auto', fill };
+  }
+  return new TextRun(options);
+}
+
+function documentModelToDocx(model, title) {
+  const page = model.page || defaultDocumentPage();
+  const defaults = { font: page.font || 'SimSun', fontSize: page.fontSize || 24 };
+  const children = [];
+
+  if (title) {
+    children.push(new Paragraph({
+      children: [new TextRun({ text: title.replace(/\.[^.]+$/, ''), bold: true, size: 28, font: defaults.font })],
+      spacing: { after: 240 },
+    }));
+  }
+
+  for (const paragraph of model.paragraphs || []) {
+    const firstStyle = paragraph.runs && paragraph.runs[0] && paragraph.runs[0].style || {};
+    children.push(new Paragraph({
+      children: (paragraph.runs || []).map((run, index) => docxRunFromModel({
+        ...run,
+        text: index > 0 ? String(run.text || '') : run.text,
+      }, defaults)),
+      alignment: docxAlignment(firstStyle),
+      spacing: page.paragraph || { line: 420, before: 0, after: 180 },
+      keepLines: !!firstStyle.keepLines,
+      keepNext: !!firstStyle.keepNext,
+    }));
+  }
+
+  if (!children.length) {
+    children.push(new Paragraph({ children: [new TextRun({ text: '' })] }));
+  }
+
+  return new Document({
+    sections: [{
+      properties: { page: { margin: page.margin || defaultDocumentPage().margin } },
+      children,
+    }],
+  });
+}
+
+async function workbookToDocxBuffer(wbInfo) {
+  const model = buildDocumentModel(wbInfo.state);
+  const doc = documentModelToDocx(model, wbInfo.name);
+  return Packer.toBuffer(doc);
 }
 
 async function syncWorkbookToDrive(wbInfo) {
@@ -911,6 +1111,25 @@ app.get('/api/download/:id', (req, res) => {
   const wbInfo = workbooks.get(req.params.id);
   if (!wbInfo) return res.status(404).json({ ok: false, error: 'workbook_not_found' });
   res.download(wbInfo.filePath, wbInfo.name);
+});
+app.get('/api/document/:id', (req, res) => {
+  const wbInfo = workbooks.get(req.params.id);
+  if (!wbInfo) return res.status(404).json({ ok: false, error: 'workbook_not_found' });
+  res.json({ ok: true, document: buildDocumentModel(wbInfo.state) });
+});
+app.get('/api/export-docx/:id', async (req, res) => {
+  const wbInfo = workbooks.get(req.params.id);
+  if (!wbInfo) return res.status(404).json({ ok: false, error: 'workbook_not_found' });
+  try {
+    const buffer = await workbookToDocxBuffer(wbInfo);
+    const name = safeName((wbInfo.name || 'final').replace(/\.[^.]+$/, '') + '.docx');
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
+    res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(name)}`);
+    res.send(buffer);
+  } catch (e) {
+    console.error('DOCX export failed:', e);
+    res.status(500).json({ ok: false, error: e.message });
+  }
 });
 app.post('/api/data/:id', express.json(), (req, res) => {
   const wbInfo = workbooks.get(req.params.id);
