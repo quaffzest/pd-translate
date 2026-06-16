@@ -22,7 +22,17 @@ const driveService = require('./services/driveService');
 const cosStorage = require('./services/cosStorage');
 
 const PORT = process.env.PORT || 3000;
-console.log('Starting pd-translate, GOOGLE_CLIENT_ID set:', !!process.env.GOOGLE_CLIENT_ID);
+const WORKSPACE_PASSWORD = String(process.env.WORKSPACE_PASSWORD || '');
+const WORKSPACE_AUTH_MODE = String(process.env.WORKSPACE_AUTH_MODE || (googleConfig.clientID && googleConfig.clientSecret ? 'google' : 'local')).toLowerCase();
+const GOOGLE_OAUTH_ENABLED = WORKSPACE_AUTH_MODE === 'google' && !!(googleConfig.clientID && googleConfig.clientSecret);
+const LOCAL_AUTH_ENABLED = WORKSPACE_AUTH_MODE === 'local';
+const cookieSecureSetting = String(process.env.SESSION_COOKIE_SECURE || '').toLowerCase();
+const SESSION_COOKIE_SECURE = cookieSecureSetting === 'true'
+  ? true
+  : cookieSecureSetting === 'false'
+    ? false
+    : /^https:/i.test(String(process.env.GOOGLE_CALLBACK_URL || process.env.RENDER_EXTERNAL_URL || ''));
+console.log('Starting pd-translate, auth mode:', WORKSPACE_AUTH_MODE, 'google enabled:', GOOGLE_OAUTH_ENABLED, 'local enabled:', LOCAL_AUTH_ENABLED);
 const DATA_DIR = process.env.DATA_DIR || (fs.existsSync('/var/data') ? '/var/data' : path.join(__dirname, 'data'));
 const LEGACY_FILE = path.join(DATA_DIR, '第01话_协作主表.xlsx');
 const WORKBOOK_DIR = path.join(DATA_DIR, 'workbooks');
@@ -832,7 +842,7 @@ const sessionMiddleware = session({
   saveUninitialized: false,
   proxy: true,
   cookie: {
-    secure: process.env.NODE_ENV === 'production',
+    secure: SESSION_COOKIE_SECURE,
     httpOnly: true,
     sameSite: 'lax',
     maxAge: 24 * 60 * 60 * 1000, // 24 hours
@@ -845,7 +855,7 @@ app.use(passport.initialize());
 app.use(passport.session());
 
 // 只在 Google OAuth 环境变量配置好时才初始化
-if (googleConfig.clientID && googleConfig.clientSecret) {
+if (GOOGLE_OAUTH_ENABLED) {
   passport.use(new GoogleStrategy({
     clientID: googleConfig.clientID,
     clientSecret: googleConfig.clientSecret,
@@ -870,6 +880,7 @@ passport.serializeUser((user, done) => done(null, user));
 passport.deserializeUser((user, done) => done(null, user));
 
 function isAllowedUser(user) {
+  if (WORKSPACE_AUTH_MODE === 'local' || (user && user.authMode === 'local')) return true;
   if (!WORKSPACE_ALLOWED_EMAILS.length) return true;
   return WORKSPACE_ALLOWED_EMAILS.includes(String(user && user.email || '').toLowerCase());
 }
@@ -886,12 +897,60 @@ function requireAuth(req, res, next) {
 
 function requirePageAuth(req, res, next) {
   if (!req.isAuthenticated || !req.isAuthenticated()) {
-    return res.redirect('/auth/google?returnTo=' + encodeURIComponent(req.originalUrl || '/workbench'));
+    return res.redirect('/auth/login?returnTo=' + encodeURIComponent(req.originalUrl || '/workbench'));
   }
   if (!isAllowedUser(req.user)) {
     return res.status(403).send('This Google account is not allowed to access this workbench.');
   }
   next();
+}
+
+function escHtml(value) {
+  return String(value == null ? '' : value).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+}
+
+function authUserForLocalLogin() {
+  return {
+    id: 'local-workspace',
+    displayName: '工作台用户',
+    email: 'local@workspace',
+    avatar: '',
+    authMode: 'local',
+  };
+}
+
+function renderLocalLoginPage(returnTo, error) {
+  const safeReturnTo = escHtml(returnTo || '/workbench');
+  const err = error ? `<div style="margin-bottom:12px;color:#d92d20;">${escHtml(error)}</div>` : '';
+  return `<!doctype html>
+  <html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>工作台登录</title>
+    <style>
+      body{margin:0;font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft YaHei",sans-serif;background:#f4f6f8;min-height:100vh;display:flex;align-items:center;justify-content:center}
+      .card{width:min(92vw,420px);background:#fff;border:1px solid #d8dde5;border-radius:14px;padding:24px;box-shadow:0 12px 30px rgba(16,24,40,.08)}
+      h1{margin:0 0 10px;font-size:22px}
+      p{margin:0 0 18px;color:#667085;line-height:1.6}
+      input{width:100%;box-sizing:border-box;border:1px solid #d8dde5;border-radius:8px;padding:12px 14px;font-size:15px}
+      button{margin-top:14px;width:100%;border:0;border-radius:8px;background:#315efb;color:#fff;padding:12px 14px;font-size:15px;cursor:pointer}
+      button:hover{background:#244bd6}
+      .hint{margin-top:12px;font-size:12px;color:#98a2b3;line-height:1.5}
+    </style>
+  </head>
+  <body>
+    <form class="card" method="post" action="/auth/login">
+      <h1>工作台登录</h1>
+      <p>请输入工作台密码后进入协作界面。</p>
+      ${err}
+      <input type="password" name="password" placeholder="工作台密码" autofocus>
+      <input type="hidden" name="returnTo" value="${safeReturnTo}">
+      <button type="submit">登录</button>
+      <div class="hint">如果你忘了密码，需要在腾讯云服务器的 <code>.env</code> 里修改 <code>WORKSPACE_PASSWORD</code>。</div>
+    </form>
+  </body>
+  </html>`;
 }
 
 wss.on('connection', (ws, req) => {
@@ -992,9 +1051,49 @@ function attachWorkspaceSocket(ws, user) {
 
 // ---- Auth Routes ----
 
+app.get('/api/auth/config', (req, res) => {
+  const loginUrl = GOOGLE_OAUTH_ENABLED
+    ? '/auth/google?returnTo=/workbench'
+    : '/auth/login?returnTo=/workbench';
+  res.json({
+    ok: true,
+    mode: WORKSPACE_AUTH_MODE,
+    googleEnabled: GOOGLE_OAUTH_ENABLED,
+    localEnabled: LOCAL_AUTH_ENABLED || !GOOGLE_OAUTH_ENABLED,
+    loginUrl,
+    loginLabel: GOOGLE_OAUTH_ENABLED ? '登录 Google' : '登录工作台',
+    logoutUrl: '/auth/logout?returnTo=/workbench',
+  });
+});
+
+app.get('/auth/login', (req, res) => {
+  if (GOOGLE_OAUTH_ENABLED && !LOCAL_AUTH_ENABLED) {
+    return res.redirect('/auth/google?returnTo=' + encodeURIComponent(req.query.returnTo || '/workbench'));
+  }
+  const returnTo = safeReturnTo(req.query.returnTo, '/workbench');
+  res.send(renderLocalLoginPage(returnTo, req.query.error ? '密码不正确，请重试。' : ''));
+});
+
+app.post('/auth/login', express.urlencoded({ extended: false }), (req, res, next) => {
+  if (!WORKSPACE_PASSWORD) return res.status(503).send('WORKSPACE_PASSWORD not configured');
+  const password = String(req.body && req.body.password || '');
+  if (!password || password !== WORKSPACE_PASSWORD) {
+    return res.redirect('/auth/login?returnTo=' + encodeURIComponent(req.body && req.body.returnTo || '/workbench') + '&error=1');
+  }
+  const user = authUserForLocalLogin();
+  req.logIn(user, loginErr => {
+    if (loginErr) return next(loginErr);
+    req.session.save(saveErr => {
+      if (saveErr) return next(saveErr);
+      const returnTo = safeReturnTo(req.body && req.body.returnTo, '/workbench');
+      res.redirect(returnTo);
+    });
+  });
+});
+
 // 发起 Google 登录
 app.get('/auth/google', (req, res, next) => {
-  if (!googleConfig.clientID) return res.status(503).send('Google OAuth not configured');
+  if (!GOOGLE_OAUTH_ENABLED) return res.status(503).send('Google OAuth not configured');
   req.session.returnTo = safeReturnTo(req.query.returnTo, '/workbench');
   passport.authenticate('google', {
     scope: [
@@ -1010,6 +1109,7 @@ app.get('/auth/google', (req, res, next) => {
 
 // Google 回调
 app.get('/auth/google/callback', (req, res, next) => {
+  if (!GOOGLE_OAUTH_ENABLED) return res.status(503).send('Google OAuth not configured');
   passport.authenticate('google', (err, user) => {
     if (err) return next(err);
     if (!user) return res.redirect('/');
@@ -1029,7 +1129,7 @@ app.get('/auth/google/callback', (req, res, next) => {
 
 // 登出
 app.get('/auth/logout', (req, res) => {
-  const returnTo = safeReturnTo(req.query.returnTo, '/workbench');
+  const returnTo = safeReturnTo(req.query.returnTo, GOOGLE_OAUTH_ENABLED ? '/workbench' : '/auth/login');
   req.logout(() => {
     req.session.destroy(() => {
       res.clearCookie('pd.sid');

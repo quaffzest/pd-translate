@@ -16,6 +16,9 @@ Set these on the Tencent Cloud server:
 NODE_ENV=production
 PORT=3000
 SESSION_SECRET=change-to-a-long-random-string
+SESSION_COOKIE_SECURE=false
+WORKSPACE_AUTH_MODE=local
+WORKSPACE_PASSWORD=change-this-to-a-strong-password
 WORKSPACE_ALLOWED_EMAILS=your@email.com,collaborator@email.com
 
 TENCENT_SECRET_ID=AKIDxxxxxxxxxxxxxxxx
@@ -42,16 +45,18 @@ The script will install dependencies, ask you for the required keys, write `.env
 ### What the script will ask you for
 
 1. Your public base URL, such as `http://YOUR_SERVER_IP:3000` or `https://your.domain.com`
-2. `GOOGLE_CLIENT_ID`
-3. `GOOGLE_CLIENT_SECRET`
-4. The Google email address that is allowed to use the workbench
-5. `TENCENT_SECRET_ID`
-6. `TENCENT_SECRET_KEY`
-7. `TENCENT_COS_BUCKET`
-8. `TENCENT_COS_REGION`
-9. `TENCENT_COS_PREFIX`
+2. Whether to enable Google login on this server
+3. If Google login is enabled: `GOOGLE_CLIENT_ID`
+4. If Google login is enabled: `GOOGLE_CLIENT_SECRET`
+5. If Google login is enabled: the Google email address allowed to use the workbench
+6. If Google login is disabled: a local workspace password
+7. `TENCENT_SECRET_ID`
+8. `TENCENT_SECRET_KEY`
+9. `TENCENT_COS_BUCKET`
+10. `TENCENT_COS_REGION`
+11. `TENCENT_COS_PREFIX`
 
-If you only want a quick local-style setup, you can keep the default values for the region and prefix prompts.
+If you only want the Tencent Cloud workspace to run first, choose the local password mode and skip the Google prompts for now.
 
 `TENCENT_COS_PREFIX` keeps this app's files isolated in the bucket. The app writes:
 
@@ -64,6 +69,8 @@ If you only want a quick local-style setup, you can keep the default values for 
 - If COS is empty, the app treats the current local workbooks as first-run migration data and uploads them to COS after startup.
 - Upload, save, move, rename, and delete actions are mirrored to COS.
 - If COS variables are not configured, the app falls back to the existing local file behavior.
+- If `WORKSPACE_AUTH_MODE=local`, the main workbench uses the local password login and does not require Google OAuth.
+- If `WORKSPACE_AUTH_MODE=google`, the workbench login still uses Google OAuth and the allowed email list.
 
 ## Current transition status
 

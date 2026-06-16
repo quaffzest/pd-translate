@@ -61,18 +61,26 @@ require_value() {
 
 write_env_file() {
   local public_base_url="$1"
-  local google_client_id="$2"
-  local google_client_secret="$3"
-  local workspace_emails="$4"
-  local tencent_secret_id="$5"
-  local tencent_secret_key="$6"
-  local cos_bucket="$7"
-  local cos_region="$8"
-  local cos_prefix="$9"
+  local auth_mode="$2"
+  local workspace_password="$3"
+  local google_client_id="$4"
+  local google_client_secret="$5"
+  local workspace_emails="$6"
+  local tencent_secret_id="$7"
+  local tencent_secret_key="$8"
+  local cos_bucket="$9"
+  local cos_region="${10}"
+  local cos_prefix="${11}"
   local session_secret
+  local session_cookie_secure
   local escape_env
 
   session_secret="$(openssl rand -hex 32)"
+  if [[ "$public_base_url" =~ ^https:// ]]; then
+    session_cookie_secure="true"
+  else
+    session_cookie_secure="false"
+  fi
 
   escape_env() {
     printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'
@@ -83,6 +91,9 @@ write_env_file() {
 NODE_ENV="production"
 PORT="3000"
 SESSION_SECRET="$(escape_env "$session_secret")"
+SESSION_COOKIE_SECURE="$(escape_env "$session_cookie_secure")"
+WORKSPACE_AUTH_MODE="$(escape_env "$auth_mode")"
+WORKSPACE_PASSWORD="$(escape_env "$workspace_password")"
 WORKSPACE_ALLOWED_EMAILS="$(escape_env "$workspace_emails")"
 
 GOOGLE_CLIENT_ID="$(escape_env "$google_client_id")"
@@ -140,23 +151,41 @@ npm install
 
 echo "Writing deployment env file..."
 PUBLIC_BASE_URL="$(prompt "Enter your public base URL (for example http://YOUR_SERVER_IP:3000 or https://your.domain.com)")"
-GOOGLE_CLIENT_ID="$(prompt "Enter GOOGLE_CLIENT_ID")"
-GOOGLE_CLIENT_SECRET="$(prompt_secret "Enter GOOGLE_CLIENT_SECRET")"
-WORKSPACE_ALLOWED_EMAILS="$(prompt "Enter allowed Google email(s), comma-separated" "")"
+USE_GOOGLE_LOGIN="$(prompt "Enable Google login for this server? (y/N)" "N")"
+USE_GOOGLE_LOGIN="${USE_GOOGLE_LOGIN,,}"
+WORKSPACE_AUTH_MODE="local"
+WORKSPACE_PASSWORD=""
+GOOGLE_CLIENT_ID=""
+GOOGLE_CLIENT_SECRET=""
+WORKSPACE_ALLOWED_EMAILS=""
+if [[ "$USE_GOOGLE_LOGIN" == "y" || "$USE_GOOGLE_LOGIN" == "yes" ]]; then
+  WORKSPACE_AUTH_MODE="google"
+  GOOGLE_CLIENT_ID="$(prompt "Enter GOOGLE_CLIENT_ID")"
+  GOOGLE_CLIENT_SECRET="$(prompt_secret "Enter GOOGLE_CLIENT_SECRET")"
+  WORKSPACE_ALLOWED_EMAILS="$(prompt "Enter allowed Google email(s), comma-separated" "")"
+else
+  WORKSPACE_PASSWORD="$(prompt_secret "Set a workspace password")"
+fi
 TENCENT_SECRET_ID="$(prompt "Enter TENCENT_SECRET_ID")"
 TENCENT_SECRET_KEY="$(prompt_secret "Enter TENCENT_SECRET_KEY")"
 TENCENT_COS_BUCKET="$(prompt "Enter TENCENT_COS_BUCKET")"
 TENCENT_COS_REGION="$(prompt "Enter TENCENT_COS_REGION" "ap-guangzhou")"
 TENCENT_COS_PREFIX="$(prompt "Enter TENCENT_COS_PREFIX" "pd-translate")"
 
-require_value "GOOGLE_CLIENT_ID" "$GOOGLE_CLIENT_ID"
-require_value "GOOGLE_CLIENT_SECRET" "$GOOGLE_CLIENT_SECRET"
+if [[ "$WORKSPACE_AUTH_MODE" == "google" ]]; then
+  require_value "GOOGLE_CLIENT_ID" "$GOOGLE_CLIENT_ID"
+  require_value "GOOGLE_CLIENT_SECRET" "$GOOGLE_CLIENT_SECRET"
+else
+  require_value "WORKSPACE_PASSWORD" "$WORKSPACE_PASSWORD"
+fi
 require_value "TENCENT_SECRET_ID" "$TENCENT_SECRET_ID"
 require_value "TENCENT_SECRET_KEY" "$TENCENT_SECRET_KEY"
 require_value "TENCENT_COS_BUCKET" "$TENCENT_COS_BUCKET"
 
 write_env_file \
   "$PUBLIC_BASE_URL" \
+  "$WORKSPACE_AUTH_MODE" \
+  "$WORKSPACE_PASSWORD" \
   "$GOOGLE_CLIENT_ID" \
   "$GOOGLE_CLIENT_SECRET" \
   "$WORKSPACE_ALLOWED_EMAILS" \
