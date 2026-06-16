@@ -16,6 +16,10 @@ const DATA_DIR = process.env.DATA_DIR || (fs.existsSync('/var/data') ? '/var/dat
 const LEGACY_FILE = path.join(DATA_DIR, '第01话_协作主表.xlsx');
 const WORKBOOK_DIR = path.join(DATA_DIR, 'workbooks');
 const META_FILE = path.join(WORKBOOK_DIR, '_meta.json');
+const WORKSPACE_ALLOWED_EMAILS = String(process.env.WORKSPACE_ALLOWED_EMAILS || '')
+  .split(',')
+  .map(email => email.trim().toLowerCase())
+  .filter(Boolean);
 
 const workbooks = new Map();
 const clients = new Map();
@@ -522,7 +526,7 @@ const wss = new WebSocketServer({ server, path: '/ws' });
 
 // ---- Session & Authentication ----
 
-app.use(session({
+const sessionMiddleware = session({
   name: 'pd.sid',
   secret: process.env.SESSION_SECRET || 'dev-secret-change-me-in-production',
   resave: false,
@@ -534,7 +538,9 @@ app.use(session({
     sameSite: 'lax',
     maxAge: 24 * 60 * 60 * 1000, // 24 hours
   },
-}));
+});
+
+app.use(sessionMiddleware);
 
 app.use(passport.initialize());
 app.use(passport.session());
@@ -564,9 +570,45 @@ if (googleConfig.clientID && googleConfig.clientSecret) {
 passport.serializeUser((user, done) => done(null, user));
 passport.deserializeUser((user, done) => done(null, user));
 
-wss.on('connection', ws => {
+function isAllowedUser(user) {
+  if (!WORKSPACE_ALLOWED_EMAILS.length) return true;
+  return WORKSPACE_ALLOWED_EMAILS.includes(String(user && user.email || '').toLowerCase());
+}
+
+function requireAuth(req, res, next) {
+  if (!req.isAuthenticated || !req.isAuthenticated()) {
+    return res.status(401).json({ ok: false, error: 'login_required' });
+  }
+  if (!isAllowedUser(req.user)) {
+    return res.status(403).json({ ok: false, error: 'forbidden' });
+  }
+  next();
+}
+
+function requirePageAuth(req, res, next) {
+  if (!req.isAuthenticated || !req.isAuthenticated()) {
+    return res.redirect('/auth/google?returnTo=' + encodeURIComponent(req.originalUrl || '/workbench'));
+  }
+  if (!isAllowedUser(req.user)) {
+    return res.status(403).send('This Google account is not allowed to access this workbench.');
+  }
+  next();
+}
+
+wss.on('connection', (ws, req) => {
+  sessionMiddleware(req, {}, () => {
+    const user = req.session && req.session.passport && req.session.passport.user;
+    if (!user || !isAllowedUser(user)) {
+      ws.close(1008, 'login_required');
+      return;
+    }
+    attachWorkspaceSocket(ws, user);
+  });
+});
+
+function attachWorkspaceSocket(ws, user) {
   const cid = 'user_' + Date.now().toString(36);
-  clients.set(ws, { name: cid, workbookId: '' });
+  clients.set(ws, { name: user.displayName || user.email || cid, workbookId: '', user });
   ws.send(JSON.stringify({ type: 'workbookList', workbooks: listWorkbooks(), clientId: cid }));
   ws.send(JSON.stringify({ type: 'userCount', count: clients.size }));
   broadcast({ type: 'userCount', count: clients.size });
@@ -625,6 +667,7 @@ wss.on('connection', ws => {
         wbInfo.state.currentSheet = msg.sheet;
         broadcast(msg, ws, wbInfo.id);
       } else if (msg.type === 'save') {
+        if (wbInfo._driveFileId && client.user) wbInfo._user = client.user;
         forceSaveWorkbook(wbInfo)
           .then(sync => {
             ws.send(JSON.stringify({ type: 'saved', time: new Date().toLocaleTimeString() }));
@@ -646,7 +689,7 @@ wss.on('connection', ws => {
     clients.delete(ws);
     broadcast({ type: 'userCount', count: clients.size });
   });
-});
+}
 
 // ---- Auth Routes ----
 
@@ -701,6 +744,7 @@ app.get('/api/user', (req, res) => {
   if (req.isAuthenticated()) {
     res.json({
       loggedIn: true,
+      allowed: isAllowedUser(req.user),
       user: {
         displayName: req.user.displayName,
         email: req.user.email,
@@ -712,6 +756,11 @@ app.get('/api/user', (req, res) => {
   }
 });
 
+app.use('/api', (req, res, next) => {
+  if (req.path === '/user') return next();
+  return requireAuth(req, res, next);
+});
+
 app.use((req, res, next) => {
   if (req.path === '/' || req.path.endsWith('.html') || req.path.startsWith('/api/drive/')) {
     res.set('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
@@ -721,18 +770,23 @@ app.use((req, res, next) => {
   next();
 });
 
-app.get(['/latest', '/drive', '/workbench'], (req, res) => {
+app.get(['/', '/latest', '/drive', '/workbench', '/index.html'], requirePageAuth, (req, res) => {
   res.set('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
   res.set('Pragma', 'no-cache');
   res.set('Expires', '0');
   res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
 
-app.get('/drive-tools', (req, res) => {
+app.get('/drive-tools', requirePageAuth, (req, res) => {
   res.set('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
   res.set('Pragma', 'no-cache');
   res.set('Expires', '0');
   res.sendFile(path.join(__dirname, 'public', 'drive-tools.html'));
+});
+
+app.use((req, res, next) => {
+  if (req.path.endsWith('.html')) return requirePageAuth(req, res, next);
+  next();
 });
 
 app.use(express.static(path.join(__dirname, 'public'), {
